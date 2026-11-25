@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
-import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
@@ -14,7 +14,6 @@ import {
   SegmentedControl,
   type SegmentOption,
 } from '@/components/common';
-import { CurrencyPickerModal } from '@/components/forms/CurrencyPickerModal';
 import { getCurrencyConfig } from '@/constants/currencies';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -45,8 +44,9 @@ export default function SettingsScreen() {
   const settings = useAppStore((s) => s.settings);
   const currencies = useAppStore((s) => s.currencies);
   const updateSettings = useAppStore((s) => s.updateSettings);
+  const openingBalanceDraft = useAppStore((s) => s.openingBalanceDraft);
+  const setOpeningBalanceDraft = useAppStore((s) => s.setOpeningBalanceDraft);
 
-  const [openingCurrencyModalVisible, setOpeningCurrencyModalVisible] = useState(false);
   const [dateModalVisible, setDateModalVisible] = useState(false);
   const [balanceModalVisible, setBalanceModalVisible] = useState(false);
   const [privacyModalVisible, setPrivacyModalVisible] = useState(false);
@@ -58,6 +58,18 @@ export default function SettingsScreen() {
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [savingBalance, setSavingBalance] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (openingBalanceDraft?.reopenOnFocus) {
+        setBalanceCurrencyInput(openingBalanceDraft.currencyCode);
+        setBalanceInput(openingBalanceDraft.amountText);
+        setBalanceError(null);
+        setBalanceModalVisible(true);
+        setOpeningBalanceDraft(null);
+      }
+    }, [openingBalanceDraft, setOpeningBalanceDraft]),
+  );
 
   const activeCurrency = getCurrencyConfig(settings.currencyCode, currencies);
   const openingCurrency = getCurrencyConfig(balanceCurrencyInput, currencies);
@@ -285,14 +297,6 @@ export default function SettingsScreen() {
         </View>
       </AppCard>
 
-      <CurrencyPickerModal
-        visible={openingCurrencyModalVisible}
-        currencies={currencies}
-        selectedCode={balanceCurrencyInput}
-        onSelect={(curr) => setBalanceCurrencyInput(curr.code)}
-        onClose={() => setOpeningCurrencyModalVisible(false)}
-      />
-
       <BottomSheetModal
         visible={dateModalVisible}
         onClose={() => setDateModalVisible(false)}>
@@ -358,7 +362,15 @@ export default function SettingsScreen() {
         </View>
 
         <Pressable
-          onPress={() => setOpeningCurrencyModalVisible(true)}
+          onPress={() => {
+            setOpeningBalanceDraft({
+              currencyCode: balanceCurrencyInput,
+              amountText: balanceInput,
+              reopenOnFocus: true,
+            });
+            setBalanceModalVisible(false);
+            router.push('/currency?mode=openingBalance');
+          }}
           style={[
             styles.currencyPickButton,
             { backgroundColor: theme.surfaceElevated, borderColor: theme.border },

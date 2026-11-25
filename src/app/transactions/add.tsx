@@ -1,4 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -25,7 +26,13 @@ export default function AddTransactionScreen() {
   const currencies = useAppStore((s) => s.currencies);
   const createTransaction = useAppStore((s) => s.createTransaction);
   const createTag = useAppStore((s) => s.createTag);
-  const createPaymentMethod = useAppStore((s) => s.createPaymentMethod);
+  const clearTransactionDraft = useAppStore((s) => s.clearTransactionDraft);
+
+  useEffect(() => {
+    return () => {
+      useAppStore.getState().clearTransactionDraft();
+    };
+  }, []);
 
   const initialType: TransactionType =
     params.type === 'income' || params.type === 'expense' ? params.type : 'expense';
@@ -34,8 +41,18 @@ export default function AddTransactionScreen() {
       ? params.date
       : undefined;
 
+  const handleClose = () => {
+    clearTransactionDraft();
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)');
+    }
+  };
+
   const handleSubmit = async (values: TransactionFormValues) => {
     await createTransaction(values);
+    clearTransactionDraft();
     if (router.canGoBack()) {
       router.back();
     } else {
@@ -48,7 +65,7 @@ export default function AddTransactionScreen() {
       edges={['top', 'bottom', 'left', 'right']}
       style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <View style={styles.headerWrap}>
-        <AppHeader title="New Transaction" showBack />
+        <AppHeader title="New Transaction" showBack onBackPress={handleClose} />
       </View>
 
       <TransactionForm
@@ -64,9 +81,8 @@ export default function AddTransactionScreen() {
         }}
         submitLabel="Save Transaction"
         onCreateTag={createTag}
-        onCreatePaymentMethod={createPaymentMethod}
         onSubmit={handleSubmit}
-        onCancel={() => router.back()}
+        onCancel={handleClose}
       />
     </SafeAreaView>
   );

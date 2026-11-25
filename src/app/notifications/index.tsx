@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   AppButton,
@@ -11,7 +12,7 @@ import {
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/store/app-store';
-import type { NotificationType } from '@/types/models';
+import type { AppNotification, NotificationType } from '@/types/models';
 import { formatDateTimeForDisplay } from '@/utils/date';
 
 export default function NotificationsScreen() {
@@ -19,7 +20,12 @@ export default function NotificationsScreen() {
   const settings = useAppStore((s) => s.settings);
   const notifications = useAppStore((s) => s.notifications);
   const markNotificationRead = useAppStore((s) => s.markNotificationRead);
+  const markNotificationUnread = useAppStore((s) => s.markNotificationUnread);
   const markAllNotificationsRead = useAppStore((s) => s.markAllNotificationsRead);
+  const deleteNotification = useAppStore((s) => s.deleteNotification);
+
+  const [selectedNotification, setSelectedNotification] =
+    useState<AppNotification | null>(null);
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 
@@ -39,9 +45,6 @@ export default function NotificationsScreen() {
     <AppScreen edges={['top', 'bottom', 'left', 'right']}>
       <AppHeader
         title="Notifications"
-        subtitle={
-          unreadCount > 0 ? `${unreadCount} unread` : 'Genuine activity & alerts'
-        }
         showBack
         rightAction={
           unreadCount > 0 ? (
@@ -59,7 +62,7 @@ export default function NotificationsScreen() {
         <EmptyState
           icon="notifications-off-outline"
           title="No notifications yet"
-          description="Alerts for backup exports, restores, and important app milestones will appear here."
+          description="Backup and budget alerts appear here."
         />
       ) : (
         <View style={styles.list}>
@@ -102,14 +105,34 @@ export default function NotificationsScreen() {
 
                   <View style={styles.content}>
                     <View style={styles.titleRow}>
-                      <Text style={[styles.title, { color: theme.text }]}>
-                        {item.title}
-                      </Text>
-                      {!item.isRead ? (
-                        <View
-                          style={[styles.unreadDot, { backgroundColor: theme.primary }]}
+                      <View style={styles.titleLeft}>
+                        {!item.isRead ? (
+                          <View
+                            style={[styles.unreadDot, { backgroundColor: theme.primary }]}
+                          />
+                        ) : null}
+                        <Text style={[styles.title, { color: theme.text }]} numberOfLines={2}>
+                          {item.title}
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          setSelectedNotification(item);
+                        }}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Actions for ${item.title}`}
+                        style={({ pressed }) => [
+                          styles.menuTrigger,
+                          pressed && styles.pressed,
+                        ]}>
+                        <Ionicons
+                          name="ellipsis-vertical"
+                          size={18}
+                          color={theme.textSecondary}
                         />
-                      ) : null}
+                      </Pressable>
                     </View>
                     <Text style={[styles.body, { color: theme.textSecondary }]}>
                       {item.body}
@@ -124,6 +147,56 @@ export default function NotificationsScreen() {
           ))}
         </View>
       )}
+
+      <Modal
+        visible={Boolean(selectedNotification)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedNotification(null)}>
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setSelectedNotification(null)}>
+          {selectedNotification ? (
+            <View
+              style={[
+                styles.menuCard,
+                { backgroundColor: theme.surface, borderColor: theme.border },
+              ]}>
+              <Pressable
+                onPress={() => {
+                  const target = selectedNotification;
+                  setSelectedNotification(null);
+                  if (target.isRead) {
+                    void markNotificationUnread(target.id);
+                  } else {
+                    void markNotificationRead(target.id);
+                  }
+                }}
+                accessibilityRole="button"
+                style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}>
+                <Text style={[styles.menuItemText, { color: theme.text }]}>
+                  {selectedNotification.isRead ? 'Mark as unread' : 'Mark as read'}
+                </Text>
+              </Pressable>
+
+              <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+              <Pressable
+                onPress={() => {
+                  const targetId = selectedNotification.id;
+                  setSelectedNotification(null);
+                  void deleteNotification(targetId);
+                }}
+                accessibilityRole="button"
+                style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}>
+                <Text style={[styles.menuItemText, { color: theme.danger }]}>
+                  Delete
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </Pressable>
+      </Modal>
     </AppScreen>
   );
 }
@@ -151,9 +224,15 @@ const styles = StyleSheet.create({
   },
   titleRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: Spacing.two,
+  },
+  titleLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one + 2,
   },
   title: {
     fontSize: 15,
@@ -165,6 +244,9 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
   },
+  menuTrigger: {
+    padding: 2,
+  },
   body: {
     fontSize: 13,
     lineHeight: 18,
@@ -172,5 +254,34 @@ const styles = StyleSheet.create({
   time: {
     fontSize: 11,
     marginTop: 2,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.five,
+  },
+  menuCard: {
+    width: '100%',
+    maxWidth: 280,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  menuItem: {
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.three,
+  },
+  menuItemText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  divider: {
+    height: 1,
+    width: '100%',
+  },
+  pressed: {
+    opacity: 0.72,
   },
 });

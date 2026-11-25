@@ -69,7 +69,7 @@ export default function ReportsScreen() {
   const transactions = useAppStore((s) => s.transactions);
 
   const today = getTodayISODate();
-  const [periodPreset, setPeriodPreset] = useState<ReportPeriodPreset>('this_month');
+  const [periodPreset, setPeriodPreset] = useState<ReportPeriodPreset>('last_7');
   const [customStart, setCustomStart] = useState(addDaysToISODate(today, -29));
   const [customEnd, setCustomEnd] = useState(today);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
@@ -142,6 +142,30 @@ export default function ReportsScreen() {
     ],
   );
 
+  const previousPeriodExpenseMinor = useMemo(() => {
+    if (periodPreset === 'all_time') return null;
+    const startMs = new Date(`${startDate}T00:00:00Z`).getTime();
+    const endMs = new Date(`${endDate}T00:00:00Z`).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+      return null;
+    }
+    const spanDays = Math.round((endMs - startMs) / 86400000);
+    const prevEnd = addDaysToISODate(startDate, -1);
+    const prevStart = addDaysToISODate(prevEnd, -spanDays);
+
+    let total = 0;
+    const targetCode = activeCurrencyCode.toUpperCase();
+    for (const tx of transactions) {
+      if (tx.type !== 'expense') continue;
+      if (tx.currencyCode.toUpperCase() !== targetCode) continue;
+      if (selectedCategoryId && tx.categoryId !== selectedCategoryId) continue;
+      if (tx.transactionDate >= prevStart && tx.transactionDate <= prevEnd) {
+        total += tx.amountMinor;
+      }
+    }
+    return total;
+  }, [periodPreset, startDate, endDate, activeCurrencyCode, transactions, selectedCategoryId]);
+
   const selectedCategory = useMemo(
     () =>
       selectedCategoryId
@@ -164,20 +188,61 @@ export default function ReportsScreen() {
     : analytics.categoryBreakdown.slice(0, 5);
 
   const activePeriodLabel =
-    PERIOD_PRESETS.find((p) => p.value === periodPreset)?.label ?? 'This Month';
+    PERIOD_PRESETS.find((p) => p.value === periodPreset)?.label ?? 'Last 7 Days';
+
+  let trendText = 'Steady';
+  let trendColor: string = theme.textSecondary;
+  let compareText = 'No prior data';
+  if (previousPeriodExpenseMinor !== null && previousPeriodExpenseMinor > 0) {
+    const diff = analytics.totalExpensesMinor - previousPeriodExpenseMinor;
+    const pct = Math.round(Math.abs((diff / previousPeriodExpenseMinor) * 100));
+    if (diff > 0) {
+      trendText = `Up ${pct}%`;
+      trendColor = theme.expense;
+      compareText = `+${formatMoney(diff, activeCurrencyCode, { catalog: currencies })}`;
+    } else if (diff < 0) {
+      trendText = `Down ${pct}%`;
+      trendColor = theme.income;
+      compareText = `-${formatMoney(Math.abs(diff), activeCurrencyCode, { catalog: currencies })}`;
+    } else {
+      trendText = 'Unchanged';
+      compareText = formatMoney(previousPeriodExpenseMinor, activeCurrencyCode, { catalog: currencies });
+    }
+  } else if (previousPeriodExpenseMinor === 0 && analytics.totalExpensesMinor > 0) {
+    trendText = 'Increased';
+    trendColor = theme.expense;
+    compareText = 'Prior: 0';
+  }
+
+  let alertText = 'On track';
+  let alertColor: string = theme.income;
+  if (analytics.totalExpensesMinor > analytics.totalIncomeMinor && analytics.totalExpensesMinor > 0) {
+    alertText = 'Over income';
+    alertColor = theme.expense;
+  } else if (
+    analytics.highestSpendingCategory &&
+    analytics.highestSpendingCategory.percentage >= 50
+  ) {
+    alertText = `${Math.round(analytics.highestSpendingCategory.percentage)}% in ${analytics.highestSpendingCategory.categoryName}`;
+    alertColor = theme.warning;
+  }
 
   return (
     <AppScreen>
       <AppHeader
         title="Reports"
         leftAction={
-          <View
-            style={[
+          <Pressable
+            onPress={() => router.push('/budgets')}
+            accessibilityRole="button"
+            accessibilityLabel="Open Budgets"
+            style={({ pressed }) => [
               styles.headerBadge,
               { backgroundColor: theme.primarySoft, borderColor: theme.border },
+              pressed && styles.pressed,
             ]}>
-            <Ionicons name="stats-chart" size={17} color={theme.primary} />
-          </View>
+            <Ionicons name="pie-chart-outline" size={18} color={theme.primary} />
+          </Pressable>
         }
         rightAction={
           <Pressable
@@ -499,54 +564,18 @@ export default function ReportsScreen() {
           <AppCard>
             <Text style={[styles.sectionTitle, { color: theme.text }]}>Insights</Text>
             <View style={styles.insightsList}>
-              {analytics.highestSpendingCategory ? (
-                <>
-                  <InsightRow
-                    label="Category"
-                    value={`${analytics.highestSpendingCategory.categoryName} (${formatMoney(analytics.highestSpendingCategory.totalMinor, activeCurrencyCode, { catalog: currencies })})`}
-                  />
-                  <View style={[styles.divider, { backgroundColor: theme.border }]} />
-                </>
-              ) : null}
-
-              {analytics.highestSpendingDay ? (
-                <>
-                  <InsightRow
-                    label="Highest"
-                    value={`${formatDateForDisplay(analytics.highestSpendingDay.date, settings.dateFormat)} (${formatMoney(analytics.highestSpendingDay.amountMinor, activeCurrencyCode, { catalog: currencies })})`}
-                  />
-                  <View style={[styles.divider, { backgroundColor: theme.border }]} />
-                </>
-              ) : null}
-
               <InsightRow
-                label="Average"
-                value={formatMoney(
-                  analytics.averageDailyExpenseMinor,
-                  activeCurrencyCode,
-                  { catalog: currencies },
-                )}
+                label="Spending"
+                value={
+                  analytics.highestSpendingCategory
+                    ? `${formatMoney(analytics.totalExpensesMinor, activeCurrencyCode, { catalog: currencies })} · ${analytics.highestSpendingCategory.categoryName}`
+                    : formatMoney(analytics.totalExpensesMinor, activeCurrencyCode, { catalog: currencies })
+                }
               />
               <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
               <InsightRow
-                label="Activity"
-                value={`${analytics.incomeTransactionCount} income · ${analytics.expenseTransactionCount} expense`}
-              />
-
-              {analytics.largestExpenseTransaction ? (
-                <>
-                  <View style={[styles.divider, { backgroundColor: theme.border }]} />
-                  <InsightRow
-                    label="Largest"
-                    value={`${analytics.largestExpenseTransaction.title} (${formatMoney(analytics.largestExpenseTransaction.amountMinor, activeCurrencyCode, { catalog: currencies })})`}
-                  />
-                </>
-              ) : null}
-
-              <View style={[styles.divider, { backgroundColor: theme.border }]} />
-              <InsightRow
-                label="Balance"
+                label="Saving"
                 value={formatMoney(analytics.netMovementMinor, activeCurrencyCode, {
                   showSign: true,
                   catalog: currencies,
@@ -555,6 +584,40 @@ export default function ReportsScreen() {
                   analytics.netMovementMinor >= 0 ? theme.income : theme.expense
                 }
               />
+              <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+              <InsightRow
+                label="Income"
+                value={formatMoney(analytics.totalIncomeMinor, activeCurrencyCode, {
+                  catalog: currencies,
+                })}
+                valueColor={theme.income}
+              />
+              <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+              <InsightRow label="Trend" value={trendText} valueColor={trendColor} />
+              <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+              <InsightRow
+                label="Highest"
+                value={
+                  analytics.highestSpendingDay
+                    ? `${formatMoney(analytics.highestSpendingDay.amountMinor, activeCurrencyCode, { catalog: currencies })} · ${formatDateForDisplay(analytics.highestSpendingDay.date, settings.dateFormat)}`
+                    : '—'
+                }
+              />
+              <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+              <InsightRow
+                label="Average"
+                value={`${formatMoney(analytics.averageDailyExpenseMinor, activeCurrencyCode, { catalog: currencies })}/day`}
+              />
+              <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+              <InsightRow label="Compare" value={compareText} />
+              <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+              <InsightRow label="Alert" value={alertText} valueColor={alertColor} />
             </View>
           </AppCard>
         </>

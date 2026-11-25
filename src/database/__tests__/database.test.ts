@@ -62,9 +62,9 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     repos = createRepositories(async () => db);
   });
 
-  test('runs V2 migrations idempotently and seeds V2 categories, payment methods, and settings', async () => {
+  test('runs V3 migrations idempotently and seeds V2/V3 categories, payment methods, and settings', async () => {
     const version = await runMigrations(db);
-    expect(version).toBe(2);
+    expect(version).toBe(3);
 
     const categories = await repos.categories.getAll({ includeArchived: true });
     const expectedCount =
@@ -80,6 +80,7 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     expect(settings.openingBalanceMinor).toBe(0);
     expect(settings.theme).toBe('system');
     expect(settings.onboardingCompleted).toBe(false);
+    expect(settings.currencyInitialized).toBe(false);
   });
 
   test('safely upgrades a simulated V1 database to V2 without data loss', async () => {
@@ -163,7 +164,7 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     );
 
     const upgradedVersion = await runMigrations(v1Db);
-    expect(upgradedVersion).toBe(2);
+    expect(upgradedVersion).toBe(3);
 
     const upgradedRepos = createRepositories(async () => v1Db);
     const settings = await upgradedRepos.settings.get();
@@ -424,15 +425,28 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
       transactionDate: '2026-11-05',
     });
 
-    const n = await repos.notifications.create({
+    const n1 = await repos.notifications.create({
       type: 'backup',
       title: 'Exported',
       body: 'Saved locally',
     });
-    expect(n.isRead).toBe(false);
+    const n2 = await repos.notifications.create({
+      type: 'system',
+      title: 'Keep Me',
+      body: 'Second alert',
+    });
+    expect(n1.isRead).toBe(false);
     await repos.notifications.markAllAsRead();
-    const readNotifs = await repos.notifications.getAll();
-    expect(readNotifs[0].isRead).toBe(true);
+    let notifs = await repos.notifications.getAll();
+    expect(notifs.every((n) => n.isRead)).toBe(true);
+
+    await repos.notifications.markAsUnread(n1.id);
+    notifs = await repos.notifications.getAll();
+    expect(notifs.find((n) => n.id === n1.id)?.isRead).toBe(false);
+
+    await repos.notifications.delete(n1.id);
+    notifs = await repos.notifications.getAll();
+    expect(notifs.map((n) => n.id)).toEqual([n2.id]);
 
     const exported = await repos.backup.exportAll('2.0.0');
     expect(exported.schemaVersion).toBe(2);
@@ -477,6 +491,10 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
         theme: 'invalid-theme' as 'system',
         dateFormat: 'DD MMM YYYY' as const,
         onboardingCompleted: true,
+        profileName: null,
+        profileBio: null,
+        profileAvatar: null,
+        currencyInitialized: false,
       },
       categories: [],
       tags: [],

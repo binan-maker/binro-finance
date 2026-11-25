@@ -42,9 +42,12 @@ export function BottomSheetModal({
   const [rendered, setRendered] = useState(visible);
   const [progress] = useState(() => new Animated.Value(visible ? 1 : 0));
 
+  if (visible && !rendered) {
+    setRendered(true);
+  }
+
   useEffect(() => {
     if (visible) {
-      setRendered(true);
       Animated.timing(progress, {
         toValue: 1,
         duration: 210,
@@ -167,7 +170,7 @@ const styles = StyleSheet.create({
     padding: Spacing.three,
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.56)',
   },
   sheetCard: {

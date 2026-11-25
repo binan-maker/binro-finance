@@ -62,7 +62,7 @@ export function CalendarMonthGrid({
   const [measuredWidth, setMeasuredWidth] = useState(fallbackWidth);
 
   const metrics = computeCalendarGridMetrics(measuredWidth);
-  const rowHeight = showDots ? metrics.cellSize + 4 : metrics.cellSize;
+  const rowHeight = showDots ? metrics.cellSize + 10 : metrics.cellSize;
 
   const firstWeekday = new Date(year, month - 1, 1).getDay();
   const daysInMonth = getDaysInMonth(year, month);
@@ -166,11 +166,7 @@ export function CalendarMonthGrid({
                     <View
                       style={[
                         styles.dot,
-                        {
-                          backgroundColor: isSelected
-                            ? theme.primaryText
-                            : theme.income,
-                        },
+                        { backgroundColor: theme.income },
                       ]}
                     />
                   ) : null}
@@ -178,11 +174,7 @@ export function CalendarMonthGrid({
                     <View
                       style={[
                         styles.dot,
-                        {
-                          backgroundColor: isSelected
-                            ? theme.primaryText
-                            : theme.expense,
-                        },
+                        { backgroundColor: theme.expense },
                       ]}
                     />
                   ) : null}
@@ -223,7 +215,6 @@ const styles = StyleSheet.create({
   dayCell: {
     alignItems: 'center',
     justifyContent: 'center',
-    position: 'relative',
   },
   dayCircle: {
     alignItems: 'center',
@@ -231,6 +222,7 @@ const styles = StyleSheet.create({
   },
   dayText: {
     fontSize: 14,
+    lineHeight: 18,
     textAlign: 'center',
   },
   androidTextFix: {
@@ -238,11 +230,10 @@ const styles = StyleSheet.create({
     textAlignVertical: 'center',
   },
   dotRow: {
-    position: 'absolute',
-    bottom: 2,
     flexDirection: 'row',
     gap: 3,
-    height: 5,
+    height: 6,
+    marginTop: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },

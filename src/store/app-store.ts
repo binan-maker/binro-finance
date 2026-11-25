@@ -58,6 +58,12 @@ export interface TransactionDraft {
   note: string;
 }
 
+export interface OpeningBalanceDraft {
+  currencyCode: string;
+  amountText: string;
+  reopenOnFocus: boolean;
+}
+
 export function createDefaultTransactionFilters(): TransactionFilterState {
   const today = getTodayISODate();
   return {
@@ -101,6 +107,8 @@ interface AppStoreState {
   notifications: AppNotification[];
   transactionFilters: TransactionFilterState;
   transactionDraft: TransactionDraft | null;
+  onboardingCurrencyCode: string | null;
+  openingBalanceDraft: OpeningBalanceDraft | null;
 
   initializeApp: () => Promise<void>;
   refreshData: () => Promise<void>;
@@ -110,6 +118,8 @@ interface AppStoreState {
   setTransactionDraft: (draft: TransactionDraft | null) => void;
   patchTransactionDraft: (patch: Partial<TransactionDraft>) => void;
   clearTransactionDraft: () => void;
+  setOnboardingCurrencyCode: (code: string | null) => void;
+  setOpeningBalanceDraft: (draft: OpeningBalanceDraft | null) => void;
   completeOnboarding: (params: {
     currencyCode: string;
     openingBalanceMinor: number;
@@ -201,6 +211,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   notifications: [],
   transactionFilters: createDefaultTransactionFilters(),
   transactionDraft: null,
+  onboardingCurrencyCode: null,
+  openingBalanceDraft: null,
 
   initializeApp: async () => {
     if (get().isLoading) return;
@@ -283,6 +295,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     set({ transactionDraft: null });
   },
 
+  setOnboardingCurrencyCode: (code) => {
+    set({ onboardingCurrencyCode: code });
+  },
+
+  setOpeningBalanceDraft: (draft) => {
+    set({ openingBalanceDraft: draft });
+  },
+
   completeOnboarding: async ({ currencyCode, openingBalanceMinor }) => {
     set({ isLoading: true, error: null });
     try {
@@ -293,7 +313,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         onboardingCompleted: true,
         currencyInitialized: true,
       });
-      set({ settings: updated, isLoading: false });
+      set({ settings: updated, onboardingCurrencyCode: null, isLoading: false });
     } catch (error) {
       set({
         isLoading: false,
@@ -504,6 +524,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       set({
         ...snapshot,
         transactionDraft: null,
+        onboardingCurrencyCode: null,
+        openingBalanceDraft: null,
         transactionFilters: createDefaultTransactionFilters(),
         isLoading: false,
       });

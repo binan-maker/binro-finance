@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -7,6 +8,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
@@ -16,33 +18,30 @@ import {
   AppHeader,
   AppInput,
   AppScreen,
-  ConfirmDialog,
   EmptyState,
 } from '@/components/common';
 import { TAG_COLOR_OPTIONS } from '@/constants/categories';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/store/app-store';
-import type { Tag } from '@/types/models';
 import { validateTagName } from '@/utils/validation';
 
 export default function TagsScreen() {
   const theme = useTheme();
+  const router = useRouter();
   const tags = useAppStore((s) => s.tags);
   const transactions = useAppStore((s) => s.transactions);
   const createTag = useAppStore((s) => s.createTag);
-  const updateTag = useAppStore((s) => s.updateTag);
-  const deleteTag = useAppStore((s) => s.deleteTag);
+
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
 
   const [editorVisible, setEditorVisible] = useState(false);
-  const [editingTag, setEditingTag] = useState<Tag | null>(null);
   const [nameInput, setNameInput] = useState('');
   const [colorInput, setColorInput] = useState<string>(TAG_COLOR_OPTIONS[0]);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-
-  const [deleteTarget, setDeleteTarget] = useState<Tag | null>(null);
-  const [deleting, setDeleting] = useState(false);
 
   const usageCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -54,18 +53,16 @@ export default function TagsScreen() {
     return counts;
   }, [transactions]);
 
+  const visibleTags = useMemo(() => {
+    const base = tags.filter((t) => (showArchived ? true : !t.isArchived));
+    const term = searchQuery.trim().toLowerCase();
+    if (!term) return base;
+    return base.filter((t) => t.name.toLowerCase().includes(term));
+  }, [tags, showArchived, searchQuery]);
+
   const openCreate = () => {
-    setEditingTag(null);
     setNameInput('');
     setColorInput(TAG_COLOR_OPTIONS[0]);
-    setEditorError(null);
-    setEditorVisible(true);
-  };
-
-  const openEdit = (tag: Tag) => {
-    setEditingTag(tag);
-    setNameInput(tag.name);
-    setColorInput(tag.color);
     setEditorError(null);
     setEditorVisible(true);
   };
@@ -81,17 +78,10 @@ export default function TagsScreen() {
     setSaving(true);
     setEditorError(null);
     try {
-      if (editingTag) {
-        await updateTag(editingTag.id, {
-          name: validation.value,
-          color: colorInput,
-        });
-      } else {
-        await createTag({
-          name: validation.value,
-          color: colorInput,
-        });
-      }
+      await createTag({
+        name: validation.value,
+        color: colorInput,
+      });
       setEditorVisible(false);
     } catch (err) {
       setEditorError(err instanceof Error ? err.message : 'Unable to save tag.');
@@ -100,71 +90,147 @@ export default function TagsScreen() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!deleteTarget || deleting) return;
-    setDeleting(true);
-    try {
-      await deleteTag(deleteTarget.id);
-      setDeleteTarget(null);
-    } finally {
-      setDeleting(false);
-    }
-  };
-
   return (
-    <AppScreen edges={['top', 'bottom', 'left', 'right']}>
+    <AppScreen
+      edges={['top', 'bottom', 'left', 'right']}
+      footer={
+        <AppButton
+          label="Add Tag"
+          size="lg"
+          onPress={openCreate}
+          fullWidth
+        />
+      }>
       <AppHeader
         title="Tags"
-        subtitle="Custom labels across transactions"
         showBack
         rightAction={
-          <AppButton
-            label="Add"
-            size="sm"
-            icon={<Ionicons name="add" size={16} color={theme.primaryText} />}
-            onPress={openCreate}
-          />
+          <Pressable
+            onPress={() => {
+              if (searchVisible && searchQuery.length > 0) {
+                setSearchQuery('');
+              }
+              setSearchVisible((v) => !v);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Search tags"
+            style={({ pressed }) => [
+              styles.headerIconBtn,
+              {
+                backgroundColor:
+                  searchVisible || searchQuery.length > 0
+                    ? theme.primarySoft
+                    : theme.surface,
+                borderColor:
+                  searchVisible || searchQuery.length > 0
+                    ? theme.primary
+                    : theme.border,
+              },
+              pressed && styles.pressed,
+            ]}>
+            <Ionicons
+              name={searchVisible ? 'close' : 'search'}
+              size={19}
+              color={
+                searchVisible || searchQuery.length > 0 ? theme.primary : theme.text
+              }
+            />
+          </Pressable>
         }
       />
 
-      <Text style={[styles.hint, { color: theme.textSecondary }]}>
-        Tags let you group transactions (e.g. Vacation, Tax Deductible, Work) without affecting category totals or budgets.
-      </Text>
+      {searchVisible ? (
+        <View
+          style={[
+            styles.searchBar,
+            { backgroundColor: theme.surface, borderColor: theme.border },
+          ]}>
+          <Ionicons name="search" size={18} color={theme.textMuted} />
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search tags"
+            placeholderTextColor={theme.textMuted}
+            autoFocus
+            style={[styles.searchInput, { color: theme.text }]}
+          />
+          {searchQuery.length > 0 ? (
+            <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
+              <Ionicons name="close-circle" size={18} color={theme.textMuted} />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
 
-      {tags.length === 0 ? (
+      <View style={styles.filterBar}>
+        <Pressable
+          onPress={() => setShowArchived((v) => !v)}
+          style={[
+            styles.toggleChip,
+            {
+              backgroundColor: showArchived
+                ? theme.primarySoft
+                : theme.surfaceElevated,
+              borderColor: showArchived ? theme.primary : theme.border,
+            },
+          ]}>
+          <Text
+            style={[
+              styles.toggleChipText,
+              { color: showArchived ? theme.primary : theme.textSecondary },
+            ]}>
+            {showArchived ? 'Showing Archived' : 'Show Archived'}
+          </Text>
+        </Pressable>
+      </View>
+
+      {visibleTags.length === 0 ? (
         <EmptyState
           icon="pricetags-outline"
-          title="No tags created yet"
-          description="Create custom tags to filter and organize transactions across categories."
-          actionLabel="Create Tag"
+          title={searchQuery.trim() ? 'No matching tags' : 'No tags created yet'}
+          description="Create custom tags to organize transactions."
+          actionLabel="Add Tag"
           onAction={openCreate}
         />
       ) : (
         <View style={styles.list}>
-          {tags.map((tag) => {
+          {visibleTags.map((tag) => {
             const count = usageCounts.get(tag.id) ?? 0;
             return (
-              <AppCard key={tag.id}>
-                <View style={styles.row}>
-                  <View style={[styles.dot, { backgroundColor: tag.color }]} />
-                  <View style={styles.meta}>
-                    <Text style={[styles.name, { color: theme.text }]}>
-                      #{tag.name}
-                    </Text>
-                    <Text style={[styles.count, { color: theme.textSecondary }]}>
-                      {count} transaction{count === 1 ? '' : 's'}
-                    </Text>
+              <Pressable
+                key={tag.id}
+                onPress={() => router.push(`/tags/${tag.id}`)}
+                accessibilityRole="button"
+                accessibilityLabel={tag.name}
+                style={({ pressed }) => [pressed && styles.pressed]}>
+                <AppCard>
+                  <View style={styles.row}>
+                    <View style={[styles.dot, { backgroundColor: tag.color }]} />
+                    <View style={styles.meta}>
+                      <View style={styles.nameRow}>
+                        <Text style={[styles.name, { color: theme.text }]}>
+                          #{tag.name}
+                        </Text>
+                        {tag.isArchived ? (
+                          <View
+                            style={[
+                              styles.badge,
+                              { backgroundColor: theme.surfaceElevated },
+                            ]}>
+                            <Text style={[styles.badgeText, { color: theme.textMuted }]}>
+                              Archived
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <Text style={[styles.count, { color: theme.textSecondary }]}>
+                        {count} transaction{count === 1 ? '' : 's'}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
                   </View>
-                  <View style={styles.actions}>
-                    <Pressable onPress={() => openEdit(tag)} hitSlop={8}>
-                      <Ionicons name="create-outline" size={19} color={theme.primary} />
-                    </Pressable>
-                    <Pressable onPress={() => setDeleteTarget(tag)} hitSlop={8}>
-                      <Ionicons name="trash-outline" size={19} color={theme.danger} />
-                    </Pressable>
-                  </View>
-                </View>
-              </AppCard>
+                </AppCard>
+              </Pressable>
             );
           })}
         </View>
@@ -187,9 +253,7 @@ export default function TagsScreen() {
               styles.sheet,
               { backgroundColor: theme.surface, borderColor: theme.border },
             ]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>
-              {editingTag ? 'Edit Tag' : 'New Tag'}
-            </Text>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>New Tag</Text>
 
             <AppInput
               label="Tag Name"
@@ -246,26 +310,50 @@ export default function TagsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-
-      <ConfirmDialog
-        visible={Boolean(deleteTarget)}
-        title="Delete Tag?"
-        message={`Delete "#${deleteTarget?.name}"? Transactions using this tag will remain untouched.`}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
-        destructive
-        loading={deleting}
-        onConfirm={() => void handleDelete()}
-        onCancel={() => setDeleteTarget(null)}
-      />
     </AppScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  hint: {
+  headerIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pressed: {
+    opacity: 0.78,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.three - 2,
+    minHeight: 42,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    paddingVertical: 6,
+  },
+  filterBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  toggleChip: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: Spacing.one + 2,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  toggleChipText: {
     fontSize: 12,
-    lineHeight: 17,
+    fontWeight: '600',
   },
   list: {
     gap: Spacing.two,
@@ -284,16 +372,26 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 2,
   },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
   name: {
     fontSize: 15,
     fontWeight: '600',
   },
+  badge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: Radius.sm,
+  },
+  badgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
   count: {
     fontSize: 12,
-  },
-  actions: {
-    flexDirection: 'row',
-    gap: Spacing.three - 2,
   },
   backdrop: {
     flex: 1,

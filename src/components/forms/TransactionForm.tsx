@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useRouter } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -19,9 +20,11 @@ import {
   SegmentedControl,
   type SegmentOption,
 } from '@/components/common';
+import { TAG_COLOR_OPTIONS } from '@/constants/categories';
 import { getCurrencyConfig, type CurrencyConfig } from '@/constants/currencies';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { type TransactionDraft, useAppStore } from '@/store/app-store';
 import type {
   Category,
   DateFormatPreference,
@@ -31,13 +34,10 @@ import type {
 } from '@/types/models';
 import { getTodayISODate, isValidISODate } from '@/utils/date';
 import { formatMinorToMajorInput, parseMajorToMinor } from '@/utils/money';
-import { validateTransactionInput } from '@/utils/validation';
+import { validateTagName, validateTransactionInput } from '@/utils/validation';
 
 import { CategoryPickerModal } from './CategoryPickerModal';
-import { CurrencyPickerModal } from './CurrencyPickerModal';
 import { DatePickerField } from './DatePickerField';
-import { PaymentMethodPickerModal } from './PaymentMethodPickerModal';
-import { TagPickerModal } from './TagPickerModal';
 
 export interface TransactionFormValues {
   type: TransactionType;
@@ -54,6 +54,7 @@ export interface TransactionFormValues {
 }
 
 interface TransactionFormProps {
+  transactionId?: string;
   defaultCurrencyCode: string;
   dateFormat: DateFormatPreference;
   categories: readonly Category[];
@@ -75,12 +76,12 @@ interface TransactionFormProps {
   };
   submitLabel: string;
   onCreateTag: (input: { name: string; color: string }) => Promise<Tag>;
-  onCreatePaymentMethod: (input: { name: string; icon?: string }) => Promise<PaymentMethodRecord>;
   onSubmit: (values: TransactionFormValues) => Promise<void>;
   onCancel?: () => void;
 }
 
 export function TransactionForm({
+  transactionId,
   defaultCurrencyCode,
   dateFormat,
   categories,
@@ -91,29 +92,46 @@ export function TransactionForm({
   initialValues,
   submitLabel,
   onCreateTag,
-  onCreatePaymentMethod,
   onSubmit,
   onCancel,
 }: TransactionFormProps) {
   const theme = useTheme();
+  const router = useRouter();
   const submittingRef = useRef(false);
 
-  const initialCurrencyCode = initialValues?.currencyCode ?? defaultCurrencyCode;
+  const transactionDraft = useAppStore((s) => s.transactionDraft);
+  const setTransactionDraft = useAppStore((s) => s.setTransactionDraft);
+  const patchTransactionDraft = useAppStore((s) => s.patchTransactionDraft);
 
-  const [step, setStep] = useState<1 | 2>(1);
-  const [type, setType] = useState<TransactionType>(initialValues?.type ?? 'expense');
+  const activeDraft =
+    transactionDraft &&
+    ((!isEditing && transactionDraft.mode === 'create') ||
+      (isEditing &&
+        transactionDraft.mode === 'edit' &&
+        transactionDraft.transactionId === transactionId))
+      ? transactionDraft
+      : null;
+
+  const initialCurrencyCode =
+    activeDraft?.currencyCode ?? initialValues?.currencyCode ?? defaultCurrencyCode;
+
+  const [step, setStep] = useState<1 | 2>(activeDraft?.step ?? 1);
+  const [type, setType] = useState<TransactionType>(
+    activeDraft?.type ?? initialValues?.type ?? 'expense',
+  );
   const [currencyCode, setCurrencyCode] = useState(initialCurrencyCode);
   const [amountText, setAmountText] = useState(
-    initialValues?.amountMinor
-      ? formatMinorToMajorInput(initialValues.amountMinor, initialCurrencyCode, currencies)
-      : '',
+    activeDraft?.amountText ??
+      (initialValues?.amountMinor
+        ? formatMinorToMajorInput(initialValues.amountMinor, initialCurrencyCode, currencies)
+        : ''),
   );
-  const [title, setTitle] = useState(initialValues?.title ?? '');
+  const [title, setTitle] = useState(activeDraft?.title ?? initialValues?.title ?? '');
   const [categoryId, setCategoryId] = useState<string | null>(
-    initialValues?.categoryId ?? null,
+    activeDraft?.categoryId ?? initialValues?.categoryId ?? null,
   );
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>(
-    initialValues?.tagIds ?? [],
+    activeDraft?.tagIds ?? initialValues?.tagIds ?? [],
   );
 
   const defaultPm =
@@ -121,31 +139,48 @@ export function TransactionForm({
     paymentMethods.find((pm) => !pm.isArchived);
 
   const [paymentMethodId, setPaymentMethodId] = useState<string | null>(
-    initialValues?.paymentMethodId !== undefined
-      ? initialValues.paymentMethodId
-      : (defaultPm?.id ?? null),
+    activeDraft
+      ? activeDraft.paymentMethodId
+      : initialValues?.paymentMethodId !== undefined
+        ? initialValues.paymentMethodId
+        : (defaultPm?.id ?? null),
   );
   const [paymentMethodName, setPaymentMethodName] = useState<string>(
-    initialValues?.paymentMethod ?? defaultPm?.name ?? 'Cash',
+    activeDraft?.paymentMethod ?? initialValues?.paymentMethod ?? defaultPm?.name ?? 'Cash',
   );
   const [transactionDate, setTransactionDate] = useState(
-    initialValues?.transactionDate && isValidISODate(initialValues.transactionDate)
-      ? initialValues.transactionDate
-      : getTodayISODate(),
+    activeDraft?.transactionDate ??
+      (initialValues?.transactionDate && isValidISODate(initialValues.transactionDate)
+        ? initialValues.transactionDate
+        : getTodayISODate()),
   );
-  const [note, setNote] = useState(initialValues?.note ?? '');
+  const [note, setNote] = useState(activeDraft?.note ?? initialValues?.note ?? '');
 
   const [stepError, setStepError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const [categoryModalVisible, setCategoryModalVisible] = useState(false);
-  const [currencyModalVisible, setCurrencyModalVisible] = useState(false);
-  const [tagModalVisible, setTagModalVisible] = useState(false);
-  const [pmModalVisible, setPmModalVisible] = useState(false);
+
+  // Inline tag creation state (hidden until user explicitly taps "+ Add Tag")
+  const [showInlineTagCreate, setShowInlineTagCreate] = useState(false);
+  const [newTagName, setNewTagName] = useState('');
+  const [newTagColor, setNewTagColor] = useState<string>(TAG_COLOR_OPTIONS[0]);
+  const [tagCreateError, setTagCreateError] = useState<string | null>(null);
+  const [creatingTag, setCreatingTag] = useState(false);
+
+  // Reflect draft mutations from dedicated full-screen pickers (/currency & /payment-methods/select)
+  const effectiveCurrencyCode =
+    !isEditing && activeDraft?.currencyCode ? activeDraft.currencyCode : currencyCode;
+  const effectivePaymentMethodId = activeDraft
+    ? activeDraft.paymentMethodId
+    : paymentMethodId;
+  const effectivePaymentMethodName = activeDraft
+    ? activeDraft.paymentMethod
+    : paymentMethodName;
 
   const currency = useMemo(
-    () => getCurrencyConfig(currencyCode, currencies),
-    [currencyCode, currencies],
+    () => getCurrencyConfig(effectiveCurrencyCode, currencies),
+    [effectiveCurrencyCode, currencies],
   );
 
   const typeOptions = useMemo<readonly SegmentOption<TransactionType>[]>(
@@ -186,28 +221,115 @@ export function TransactionForm({
     [visibleCategories, categoryId],
   );
 
-  const selectedTags = useMemo(
-    () => tags.filter((t) => selectedTagIds.includes(t.id)),
+  const displayTags = useMemo(
+    () => tags.filter((t) => !t.isArchived || selectedTagIds.includes(t.id)),
     [tags, selectedTagIds],
   );
+
+  const buildDraftSnapshot = (
+    overrides?: Partial<TransactionDraft>,
+  ): TransactionDraft => ({
+    mode: isEditing ? 'edit' : 'create',
+    transactionId,
+    step,
+    type,
+    amountText,
+    currencyCode: effectiveCurrencyCode,
+    title,
+    categoryId: effectiveCategory?.id ?? categoryId,
+    tagIds: selectedTagIds,
+    transactionDate,
+    paymentMethodId: effectivePaymentMethodId,
+    paymentMethod: effectivePaymentMethodName,
+    note,
+    ...overrides,
+  });
+
+  const syncDraftPatch = (patch: Partial<TransactionDraft>) => {
+    if (activeDraft) {
+      patchTransactionDraft(patch);
+    }
+  };
+
+  const openCurrencyPage = () => {
+    if (isEditing) return;
+    setStepError(null);
+    setCurrencyCode(effectiveCurrencyCode);
+    setTransactionDraft(buildDraftSnapshot());
+    router.push('/currency?mode=draft');
+  };
+
+  const openPaymentMethodPage = () => {
+    setPaymentMethodId(effectivePaymentMethodId);
+    setPaymentMethodName(effectivePaymentMethodName);
+    setTransactionDraft(buildDraftSnapshot());
+    router.push('/payment-methods/select');
+  };
 
   const handleTypeChange = (nextType: TransactionType) => {
     setType(nextType);
     const firstForType = categories.find(
       (c) => c.type === nextType && !c.isArchived,
     );
-    setCategoryId(firstForType?.id ?? null);
+    const nextCatId = firstForType?.id ?? null;
+    setCategoryId(nextCatId);
     setStepError(null);
+    syncDraftPatch({ type: nextType, categoryId: nextCatId });
+  };
+
+  const handleToggleTag = (tagId: string) => {
+    const next = selectedTagIds.includes(tagId)
+      ? selectedTagIds.filter((id) => id !== tagId)
+      : [...selectedTagIds, tagId];
+    setSelectedTagIds(next);
+    syncDraftPatch({ tagIds: next });
+  };
+
+  const handleCreateInlineTag = async () => {
+    if (creatingTag) return;
+    setTagCreateError(null);
+    const validation = validateTagName(newTagName);
+    if (!validation.valid || !validation.value) {
+      setTagCreateError(validation.error ?? 'Invalid tag name.');
+      return;
+    }
+
+    setCreatingTag(true);
+    try {
+      const created = await onCreateTag({
+        name: validation.value,
+        color: newTagColor,
+      });
+      const nextIds = selectedTagIds.includes(created.id)
+        ? selectedTagIds
+        : [...selectedTagIds, created.id];
+      setSelectedTagIds(nextIds);
+      syncDraftPatch({ tagIds: nextIds });
+      setNewTagName('');
+      setNewTagColor(TAG_COLOR_OPTIONS[0]);
+      setShowInlineTagCreate(false);
+    } catch (error) {
+      setTagCreateError(
+        error instanceof Error ? error.message : 'Unable to create tag.',
+      );
+    } finally {
+      setCreatingTag(false);
+    }
   };
 
   const handleNext = () => {
     setStepError(null);
-    const parsedMinor = parseMajorToMinor(amountText, currencyCode, currencies);
+    const parsedMinor = parseMajorToMinor(
+      amountText,
+      effectiveCurrencyCode,
+      currencies,
+    );
     if (parsedMinor === null || parsedMinor <= 0) {
       setStepError(`Enter a valid positive amount in ${currency.code}.`);
       return;
     }
     setStep(2);
+    syncDraftPatch({ step: 2 });
   };
 
   const handleSubmit = async () => {
@@ -218,10 +340,10 @@ export function TransactionForm({
       type,
       title,
       rawAmount: amountText,
-      currencyCode,
+      currencyCode: effectiveCurrencyCode,
       categoryId: effectiveCategory?.id ?? null,
       transactionDate,
-      paymentMethod: paymentMethodName,
+      paymentMethod: effectivePaymentMethodName,
       catalog: currencies,
     });
 
@@ -245,8 +367,8 @@ export function TransactionForm({
         currencyCode: currency.code,
         categoryId: effectiveCategory.id,
         categoryNameSnapshot: effectiveCategory.name,
-        paymentMethodId,
-        paymentMethod: paymentMethodName,
+        paymentMethodId: effectivePaymentMethodId,
+        paymentMethod: effectivePaymentMethodName,
         tagIds: selectedTagIds,
         transactionDate,
         note: note.trim() || null,
@@ -270,24 +392,25 @@ export function TransactionForm({
       keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}>
       {step === 1 ? (
         <View style={styles.stepOneContainer}>
-          <ScrollView
-            style={styles.flex}
-            contentContainerStyle={styles.stepOneScroll}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}>
+          <View style={styles.stepOneTopBar}>
             <SegmentedControl
               options={typeOptions}
               value={type}
               onChange={handleTypeChange}
             />
+          </View>
 
+          <ScrollView
+            style={styles.flex}
+            contentContainerStyle={styles.stepOneScroll}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
             <View style={styles.amountCenter}>
               <Pressable
-                onPress={() => {
-                  if (!isEditing) setCurrencyModalVisible(true);
-                }}
+                onPress={openCurrencyPage}
                 disabled={isEditing}
                 accessibilityRole="button"
+                accessibilityLabel="Select currency"
                 style={[
                   styles.currencyBadge,
                   {
@@ -313,6 +436,7 @@ export function TransactionForm({
                   value={amountText}
                   onChangeText={(text) => {
                     setAmountText(text);
+                    syncDraftPatch({ amountText: text });
                     if (stepError) setStepError(null);
                   }}
                   placeholder={currency.minorUnits === 0 ? '0' : '0.00'}
@@ -369,7 +493,10 @@ export function TransactionForm({
             showsVerticalScrollIndicator={false}>
             {/* Summary banner for Step 1 */}
             <Pressable
-              onPress={() => setStep(1)}
+              onPress={() => {
+                setStep(1);
+                syncDraftPatch({ step: 1 });
+              }}
               style={[
                 styles.amountSummaryBanner,
                 { backgroundColor: theme.surface, borderColor: theme.border },
@@ -387,7 +514,6 @@ export function TransactionForm({
                   styles.editAmountPill,
                   { backgroundColor: theme.surfaceElevated },
                 ]}>
-                <Ionicons name="pencil" size={14} color={theme.primary} />
                 <Text style={[styles.editAmountText, { color: theme.primary }]}>
                   Edit
                 </Text>
@@ -400,13 +526,10 @@ export function TransactionForm({
                 value={title}
                 onChangeText={(text) => {
                   setTitle(text);
+                  syncDraftPatch({ title: text });
                   if (stepError) setStepError(null);
                 }}
-                placeholder={
-                  type === 'expense'
-                    ? 'e.g. Morning Coffee, Groceries'
-                    : 'e.g. Monthly Salary, Client Invoice'
-                }
+                placeholder="Transaction name"
                 maxLength={100}
               />
 
@@ -414,7 +537,10 @@ export function TransactionForm({
                 label="Date"
                 value={transactionDate}
                 dateFormat={dateFormat}
-                onChange={setTransactionDate}
+                onChange={(nextDate) => {
+                  setTransactionDate(nextDate);
+                  syncDraftPatch({ transactionDate: nextDate });
+                }}
               />
 
               {/* Category selector */}
@@ -443,57 +569,166 @@ export function TransactionForm({
                       Select category
                     </Text>
                   )}
-                  <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
+                  <Ionicons name="chevron-down" size={18} color={theme.textMuted} />
                 </Pressable>
               </View>
 
-              {/* Tags multi-select */}
+              {/* Inline Tags selection */}
               <View style={styles.selectorField}>
                 <Text style={[styles.fieldLabel, { color: theme.text }]}>
                   Tags (Optional)
                 </Text>
-                <Pressable
-                  onPress={() => setTagModalVisible(true)}
-                  accessibilityRole="button"
-                  style={[
-                    styles.selectorButton,
-                    { backgroundColor: theme.surface, borderColor: theme.border },
-                  ]}>
-                  {selectedTags.length > 0 ? (
-                    <View style={styles.tagsWrap}>
-                      {selectedTags.map((tag) => (
+
+                <View style={styles.inlineTagsWrap}>
+                  {displayTags.map((tag) => {
+                    const selected = selectedTagIds.includes(tag.id);
+                    return (
+                      <Pressable
+                        key={tag.id}
+                        onPress={() => handleToggleTag(tag.id)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                        style={({ pressed }) => [
+                          styles.inlineTagPill,
+                          {
+                            backgroundColor: selected ? theme.primary : theme.surface,
+                            borderColor: selected ? theme.primary : theme.border,
+                          },
+                          pressed && styles.pressed,
+                        ]}>
                         <View
-                          key={tag.id}
                           style={[
-                            styles.tagChip,
+                            styles.tagDot,
                             {
-                              backgroundColor: `${tag.color}20`,
-                              borderColor: tag.color,
+                              backgroundColor: selected
+                                ? theme.primaryText
+                                : tag.color,
                             },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.inlineTagText,
+                            { color: selected ? theme.primaryText : theme.text },
                           ]}>
-                          <View style={[styles.tagDot, { backgroundColor: tag.color }]} />
-                          <Text style={[styles.tagChipText, { color: theme.text }]}>
-                            {tag.name}
-                          </Text>
-                        </View>
-                      ))}
+                          {tag.name}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+
+                  {!showInlineTagCreate ? (
+                    <Pressable
+                      onPress={() => {
+                        setTagCreateError(null);
+                        setShowInlineTagCreate(true);
+                      }}
+                      accessibilityRole="button"
+                      style={({ pressed }) => [
+                        styles.addTagPill,
+                        {
+                          backgroundColor: theme.surfaceElevated,
+                          borderColor: theme.border,
+                        },
+                        pressed && styles.pressed,
+                      ]}>
+                      <Ionicons name="add" size={15} color={theme.primary} />
+                      <Text style={[styles.addTagText, { color: theme.primary }]}>
+                        Add Tag
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+
+                {showInlineTagCreate ? (
+                  <View
+                    style={[
+                      styles.inlineCreateCard,
+                      {
+                        backgroundColor: theme.surfaceElevated,
+                        borderColor: theme.border,
+                      },
+                    ]}>
+                    <TextInput
+                      value={newTagName}
+                      onChangeText={(text) => {
+                        setNewTagName(text);
+                        if (tagCreateError) setTagCreateError(null);
+                      }}
+                      placeholder="Tag name"
+                      placeholderTextColor={theme.textMuted}
+                      maxLength={28}
+                      autoFocus
+                      style={[
+                        styles.inlineTagInput,
+                        {
+                          color: theme.text,
+                          backgroundColor: theme.surface,
+                          borderColor: theme.border,
+                        },
+                      ]}
+                    />
+
+                    <View style={styles.swatchRow}>
+                      {TAG_COLOR_OPTIONS.map((swatch) => {
+                        const selected = newTagColor === swatch;
+                        return (
+                          <Pressable
+                            key={swatch}
+                            onPress={() => setNewTagColor(swatch)}
+                            style={[
+                              styles.colorSwatch,
+                              {
+                                backgroundColor: swatch,
+                                borderWidth: selected ? 2.5 : 0,
+                                borderColor: theme.text,
+                              },
+                            ]}
+                          />
+                        );
+                      })}
                     </View>
-                  ) : (
-                    <Text style={[styles.selectorPlaceholder, { color: theme.textMuted }]}>
-                      Add optional tags...
-                    </Text>
-                  )}
-                  <Ionicons name="pricetags-outline" size={18} color={theme.textMuted} />
-                </Pressable>
+
+                    {tagCreateError ? (
+                      <Text style={[styles.tagErrorText, { color: theme.danger }]}>
+                        {tagCreateError}
+                      </Text>
+                    ) : null}
+
+                    <View style={styles.inlineCreateActions}>
+                      <View style={styles.flex}>
+                        <AppButton
+                          label="Cancel"
+                          size="sm"
+                          variant="outline"
+                          onPress={() => {
+                            setShowInlineTagCreate(false);
+                            setNewTagName('');
+                            setTagCreateError(null);
+                          }}
+                          disabled={creatingTag}
+                          fullWidth
+                        />
+                      </View>
+                      <View style={styles.flex}>
+                        <AppButton
+                          label="Create"
+                          size="sm"
+                          onPress={() => void handleCreateInlineTag()}
+                          loading={creatingTag}
+                          fullWidth
+                        />
+                      </View>
+                    </View>
+                  </View>
+                ) : null}
               </View>
 
               {/* Currency selector */}
               <View style={styles.selectorField}>
                 <Text style={[styles.fieldLabel, { color: theme.text }]}>Currency</Text>
                 <Pressable
-                  onPress={() => {
-                    if (!isEditing) setCurrencyModalVisible(true);
-                  }}
+                  onPress={openCurrencyPage}
                   disabled={isEditing}
                   accessibilityRole="button"
                   style={[
@@ -519,14 +754,14 @@ export function TransactionForm({
                   Payment Method
                 </Text>
                 <Pressable
-                  onPress={() => setPmModalVisible(true)}
+                  onPress={openPaymentMethodPage}
                   accessibilityRole="button"
                   style={[
                     styles.selectorButton,
                     { backgroundColor: theme.surface, borderColor: theme.border },
                   ]}>
                   <Text style={[styles.selectorValue, { color: theme.text }]}>
-                    {paymentMethodName}
+                    {effectivePaymentMethodName}
                   </Text>
                   <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
                 </Pressable>
@@ -535,7 +770,10 @@ export function TransactionForm({
               <AppInput
                 label="Note (Optional)"
                 value={note}
-                onChangeText={setNote}
+                onChangeText={(text) => {
+                  setNote(text);
+                  syncDraftPatch({ note: text });
+                }}
                 placeholder="Add any extra details..."
                 multiline
                 maxLength={300}
@@ -561,6 +799,7 @@ export function TransactionForm({
                 onPress={() => {
                   setStepError(null);
                   setStep(1);
+                  syncDraftPatch({ step: 1 });
                 }}
                 disabled={submitting}
                 fullWidth
@@ -583,41 +822,11 @@ export function TransactionForm({
         type={type}
         categories={categories}
         selectedId={effectiveCategory?.id ?? null}
-        onSelect={(cat) => setCategoryId(cat.id)}
+        onSelect={(cat) => {
+          setCategoryId(cat.id);
+          syncDraftPatch({ categoryId: cat.id });
+        }}
         onClose={() => setCategoryModalVisible(false)}
-      />
-
-      <CurrencyPickerModal
-        visible={currencyModalVisible}
-        currencies={currencies}
-        selectedCode={currencyCode}
-        onSelect={(curr) => {
-          setCurrencyCode(curr.code);
-          if (stepError) setStepError(null);
-        }}
-        onClose={() => setCurrencyModalVisible(false)}
-      />
-
-      <TagPickerModal
-        visible={tagModalVisible}
-        tags={tags}
-        selectedIds={selectedTagIds}
-        onChange={setSelectedTagIds}
-        onCreateTag={onCreateTag}
-        onClose={() => setTagModalVisible(false)}
-      />
-
-      <PaymentMethodPickerModal
-        visible={pmModalVisible}
-        paymentMethods={paymentMethods}
-        selectedId={paymentMethodId}
-        selectedName={paymentMethodName}
-        onSelect={(pm) => {
-          setPaymentMethodId(pm.id);
-          setPaymentMethodName(pm.name);
-        }}
-        onCreateMethod={onCreatePaymentMethod}
-        onClose={() => setPmModalVisible(false)}
       />
     </KeyboardAvoidingView>
   );
@@ -630,18 +839,23 @@ const styles = StyleSheet.create({
   stepOneContainer: {
     flex: 1,
   },
+  stepOneTopBar: {
+    paddingHorizontal: Spacing.three,
+    paddingTop: Spacing.two,
+    paddingBottom: Spacing.one,
+  },
   stepOneScroll: {
     flexGrow: 1,
     paddingHorizontal: Spacing.three,
-    paddingTop: Spacing.two,
-    paddingBottom: Spacing.four,
+    paddingBottom: Spacing.three,
   },
   amountCenter: {
     flex: 1,
-    minHeight: 280,
+    minHeight: 190,
     alignItems: 'center',
     justifyContent: 'center',
     gap: Spacing.three,
+    paddingVertical: Spacing.three,
   },
   currencyBadge: {
     flexDirection: 'row',
@@ -704,10 +918,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   editAmountPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: Spacing.two + 4,
+    paddingHorizontal: Spacing.three - 2,
     paddingVertical: Spacing.one + 2,
     borderRadius: Radius.full,
   },
@@ -747,29 +958,78 @@ const styles = StyleSheet.create({
     fontSize: 15,
     flex: 1,
   },
-  tagsWrap: {
-    flex: 1,
+  inlineTagsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
+    gap: Spacing.two,
   },
-  tagChip: {
+  inlineTagPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: Spacing.one + 3,
     borderRadius: Radius.full,
     borderWidth: 1,
   },
+  inlineTagText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  addTagPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: Spacing.one + 3,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  addTagText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
   tagDot: {
-    width: 7,
-    height: 7,
+    width: 8,
+    height: 8,
     borderRadius: 4,
   },
-  tagChipText: {
+  inlineCreateCard: {
+    padding: Spacing.three - 2,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    gap: Spacing.two,
+    marginTop: Spacing.one,
+  },
+  inlineTagInput: {
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: Spacing.two,
+    fontSize: 14,
+  },
+  swatchRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
+  colorSwatch: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+  },
+  tagErrorText: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  inlineCreateActions: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  pressed: {
+    opacity: 0.78,
   },
   errorText: {
     fontSize: 13,

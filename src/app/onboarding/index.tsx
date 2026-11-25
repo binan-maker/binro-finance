@@ -4,7 +4,6 @@ import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppButton, AppCard, AppInput, AppScreen } from '@/components/common';
-import { CurrencyPickerModal } from '@/components/forms/CurrencyPickerModal';
 import {
   DEFAULT_CURRENCY_CODE,
   getCurrencyConfig,
@@ -21,13 +20,12 @@ export default function OnboardingScreen() {
   const router = useRouter();
   const settings = useAppStore((s) => s.settings);
   const currencies = useAppStore((s) => s.currencies);
+  const onboardingCurrencyCode = useAppStore((s) => s.onboardingCurrencyCode);
+  const setOnboardingCurrencyCode = useAppStore((s) => s.setOnboardingCurrencyCode);
   const completeOnboarding = useAppStore((s) => s.completeOnboarding);
 
-  const [currencyCode, setCurrencyCode] = useState(
-    settings.currencyCode || DEFAULT_CURRENCY_CODE,
-  );
+  const currencyCode = onboardingCurrencyCode || settings.currencyCode || DEFAULT_CURRENCY_CODE;
   const [openingBalanceText, setOpeningBalanceText] = useState('');
-  const [currencyModalVisible, setCurrencyModalVisible] = useState(false);
   const [amountError, setAmountError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -120,7 +118,7 @@ export default function OnboardingScreen() {
               <Pressable
                 key={currency.code}
                 onPress={() => {
-                  setCurrencyCode(currency.code);
+                  setOnboardingCurrencyCode(currency.code);
                   setAmountError(null);
                 }}
                 accessibilityRole="button"
@@ -163,7 +161,11 @@ export default function OnboardingScreen() {
         </View>
 
         <Pressable
-          onPress={() => setCurrencyModalVisible(true)}
+          onPress={() => {
+            setOnboardingCurrencyCode(currencyCode);
+            setAmountError(null);
+            router.push('/currency?mode=onboarding');
+          }}
           accessibilityRole="button"
           style={[
             styles.browseBtn,
@@ -201,17 +203,6 @@ export default function OnboardingScreen() {
           helperText="Opening balance is tracked in its own currency separately from your income."
         />
       </AppCard>
-
-      <CurrencyPickerModal
-        visible={currencyModalVisible}
-        currencies={currencies}
-        selectedCode={currencyCode}
-        onSelect={(curr) => {
-          setCurrencyCode(curr.code);
-          setAmountError(null);
-        }}
-        onClose={() => setCurrencyModalVisible(false)}
-      />
     </AppScreen>
   );
 }

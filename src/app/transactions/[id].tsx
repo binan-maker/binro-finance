@@ -41,7 +41,7 @@ export default function TransactionDetailsScreen() {
   const updateTransaction = useAppStore((s) => s.updateTransaction);
   const deleteTransaction = useAppStore((s) => s.deleteTransaction);
   const createTag = useAppStore((s) => s.createTag);
-  const createPaymentMethod = useAppStore((s) => s.createPaymentMethod);
+  const clearTransactionDraft = useAppStore((s) => s.clearTransactionDraft);
 
   const txFromStore = transactions.find((t) => t.id === id) ?? null;
   const [fetchedTx, setFetchedTx] = useState<Transaction | null>(null);
@@ -76,6 +76,12 @@ export default function TransactionDetailsScreen() {
       active = false;
     };
   }, [id, txFromStore]);
+
+  useEffect(() => {
+    return () => {
+      useAppStore.getState().clearTransactionDraft();
+    };
+  }, []);
 
   if (loading) {
     return (
@@ -114,6 +120,7 @@ export default function TransactionDetailsScreen() {
       ...values,
       currencyCode: loadedTx.currencyCode,
     });
+    clearTransactionDraft();
     setIsEditing(false);
   };
 
@@ -138,6 +145,11 @@ export default function TransactionDetailsScreen() {
   };
 
   if (isEditing) {
+    const exitEditing = () => {
+      clearTransactionDraft();
+      setIsEditing(false);
+    };
+
     return (
       <SafeAreaView
         edges={['top', 'bottom', 'left', 'right']}
@@ -146,10 +158,11 @@ export default function TransactionDetailsScreen() {
           <AppHeader
             title="Edit Transaction"
             showBack
-            onBackPress={() => setIsEditing(false)}
+            onBackPress={exitEditing}
           />
         </View>
         <TransactionForm
+          transactionId={loadedTx.id}
           defaultCurrencyCode={loadedTx.currencyCode}
           dateFormat={settings.dateFormat}
           categories={categories}
@@ -171,9 +184,8 @@ export default function TransactionDetailsScreen() {
           }}
           submitLabel="Save Changes"
           onCreateTag={createTag}
-          onCreatePaymentMethod={createPaymentMethod}
           onSubmit={handleUpdate}
-          onCancel={() => setIsEditing(false)}
+          onCancel={exitEditing}
         />
       </SafeAreaView>
     );

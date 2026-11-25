@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -7,6 +8,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
@@ -17,51 +19,62 @@ import {
   AppInput,
   AppScreen,
   CategoryIcon,
-  ConfirmDialog,
+  EmptyState,
 } from '@/components/common';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/store/app-store';
-import type { PaymentMethodRecord } from '@/types/models';
 import { validatePaymentMethodName } from '@/utils/validation';
 
 const PM_ICONS = ['cash', 'qr-code', 'card', 'bank', 'wallet', 'phone'] as const;
 
 export default function PaymentMethodsScreen() {
   const theme = useTheme();
-  const paymentMethods = useAppStore((s) => s.paymentMethods);
-  const createPaymentMethod = useAppStore((s) => s.createPaymentMethod);
-  const updatePaymentMethod = useAppStore((s) => s.updatePaymentMethod);
+  const router = useRouter();
 
+  const paymentMethods = useAppStore((s) => s.paymentMethods);
+  const transactions = useAppStore((s) => s.transactions);
+  const createPaymentMethod = useAppStore((s) => s.createPaymentMethod);
+
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+
   const [editorVisible, setEditorVisible] = useState(false);
-  const [editingMethod, setEditingMethod] = useState<PaymentMethodRecord | null>(null);
   const [nameInput, setNameInput] = useState('');
   const [iconInput, setIconInput] = useState<string>('wallet');
   const [editorError, setEditorError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const [archiveTarget, setArchiveTarget] = useState<PaymentMethodRecord | null>(null);
-  const [archiving, setArchiving] = useState(false);
+  const usageCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const pm of paymentMethods) {
+      counts.set(pm.id, 0);
+    }
+    for (const tx of transactions) {
+      if (tx.paymentMethodId && counts.has(tx.paymentMethodId)) {
+        counts.set(tx.paymentMethodId, (counts.get(tx.paymentMethodId) ?? 0) + 1);
+      } else {
+        const lower = tx.paymentMethod.trim().toLowerCase();
+        const match = paymentMethods.find((pm) => pm.name.toLowerCase() === lower);
+        if (match) {
+          counts.set(match.id, (counts.get(match.id) ?? 0) + 1);
+        }
+      }
+    }
+    return counts;
+  }, [paymentMethods, transactions]);
 
-  const visibleMethods = useMemo(
-    () =>
-      paymentMethods.filter((pm) => (showArchived ? true : !pm.isArchived)),
-    [paymentMethods, showArchived],
-  );
+  const visibleMethods = useMemo(() => {
+    const base = paymentMethods.filter((pm) => (showArchived ? true : !pm.isArchived));
+    const term = searchQuery.trim().toLowerCase();
+    if (!term) return base;
+    return base.filter((pm) => pm.name.toLowerCase().includes(term));
+  }, [paymentMethods, showArchived, searchQuery]);
 
   const openCreate = () => {
-    setEditingMethod(null);
     setNameInput('');
     setIconInput('wallet');
-    setEditorError(null);
-    setEditorVisible(true);
-  };
-
-  const openEdit = (pm: PaymentMethodRecord) => {
-    setEditingMethod(pm);
-    setNameInput(pm.name);
-    setIconInput(pm.icon);
     setEditorError(null);
     setEditorVisible(true);
   };
@@ -77,17 +90,10 @@ export default function PaymentMethodsScreen() {
     setSaving(true);
     setEditorError(null);
     try {
-      if (editingMethod) {
-        await updatePaymentMethod(editingMethod.id, {
-          name: check.value,
-          icon: iconInput,
-        });
-      } else {
-        await createPaymentMethod({
-          name: check.value,
-          icon: iconInput,
-        });
-      }
+      await createPaymentMethod({
+        name: check.value,
+        icon: iconInput,
+      });
       setEditorVisible(false);
     } catch (err) {
       setEditorError(
@@ -98,39 +104,79 @@ export default function PaymentMethodsScreen() {
     }
   };
 
-  const handleToggleArchive = async () => {
-    if (!archiveTarget || archiving) return;
-    setArchiving(true);
-    try {
-      await updatePaymentMethod(archiveTarget.id, {
-        isArchived: !archiveTarget.isArchived,
-      });
-      setArchiveTarget(null);
-    } finally {
-      setArchiving(false);
-    }
-  };
-
   return (
-    <AppScreen edges={['top', 'bottom', 'left', 'right']}>
+    <AppScreen
+      edges={['top', 'bottom', 'left', 'right']}
+      footer={
+        <AppButton
+          label="Add Payment Method"
+          size="lg"
+          onPress={openCreate}
+          fullWidth
+        />
+      }>
       <AppHeader
         title="Payment Methods"
-        subtitle="Built-in & custom methods"
         showBack
         rightAction={
-          <AppButton
-            label="Add"
-            size="sm"
-            icon={<Ionicons name="add" size={16} color={theme.primaryText} />}
-            onPress={openCreate}
-          />
+          <Pressable
+            onPress={() => {
+              if (searchVisible && searchQuery.length > 0) {
+                setSearchQuery('');
+              }
+              setSearchVisible((v) => !v);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Search payment methods"
+            style={({ pressed }) => [
+              styles.headerIconBtn,
+              {
+                backgroundColor:
+                  searchVisible || searchQuery.length > 0
+                    ? theme.primarySoft
+                    : theme.surface,
+                borderColor:
+                  searchVisible || searchQuery.length > 0
+                    ? theme.primary
+                    : theme.border,
+              },
+              pressed && styles.pressed,
+            ]}>
+            <Ionicons
+              name={searchVisible ? 'close' : 'search'}
+              size={19}
+              color={
+                searchVisible || searchQuery.length > 0 ? theme.primary : theme.text
+              }
+            />
+          </Pressable>
         }
       />
 
+      {searchVisible ? (
+        <View
+          style={[
+            styles.searchBar,
+            { backgroundColor: theme.surface, borderColor: theme.border },
+          ]}>
+          <Ionicons name="search" size={18} color={theme.textMuted} />
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search payment methods"
+            placeholderTextColor={theme.textMuted}
+            autoFocus
+            style={[styles.searchInput, { color: theme.text }]}
+          />
+          {searchQuery.length > 0 ? (
+            <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
+              <Ionicons name="close-circle" size={18} color={theme.textMuted} />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
       <View style={styles.filterBar}>
-        <Text style={[styles.hint, { color: theme.textSecondary }]}>
-          Renaming or archiving a payment method keeps historical names intact on existing transactions.
-        </Text>
         <Pressable
           onPress={() => setShowArchived((v) => !v)}
           style={[
@@ -152,48 +198,61 @@ export default function PaymentMethodsScreen() {
         </Pressable>
       </View>
 
-      <View style={styles.list}>
-        {visibleMethods.map((pm) => (
-          <AppCard key={pm.id}>
-            <View style={styles.row}>
-              <CategoryIcon icon={pm.icon} color="#059669" size={38} />
-              <View style={styles.meta}>
-                <View style={styles.nameRow}>
-                  <Text style={[styles.name, { color: theme.text }]}>{pm.name}</Text>
-                  <View
-                    style={[
-                      styles.badge,
-                      { backgroundColor: theme.surfaceElevated },
-                    ]}>
-                    <Text style={[styles.badgeText, { color: theme.textMuted }]}>
-                      {pm.isArchived
-                        ? 'Archived'
-                        : pm.isBuiltin
-                          ? 'Built-in'
-                          : 'Custom'}
-                    </Text>
+      {visibleMethods.length === 0 ? (
+        <EmptyState
+          icon="card-outline"
+          title="No payment methods found"
+          description="Try clearing your search or add a new payment method."
+          actionLabel="Add Payment Method"
+          onAction={openCreate}
+        />
+      ) : (
+        <View style={styles.list}>
+          {visibleMethods.map((pm) => {
+            const count = usageCounts.get(pm.id) ?? 0;
+            return (
+              <Pressable
+                key={pm.id}
+                onPress={() => router.push(`/payment-methods/${pm.id}`)}
+                accessibilityRole="button"
+                accessibilityLabel={pm.name}
+                style={({ pressed }) => [pressed && styles.pressed]}>
+                <AppCard>
+                  <View style={styles.row}>
+                    <CategoryIcon icon={pm.icon} color={theme.primary} size={40} />
+                    <View style={styles.meta}>
+                      <View style={styles.nameRow}>
+                        <Text style={[styles.name, { color: theme.text }]}>
+                          {pm.name}
+                        </Text>
+                        <View
+                          style={[
+                            styles.badge,
+                            { backgroundColor: theme.surfaceElevated },
+                          ]}>
+                          <Text style={[styles.badgeText, { color: theme.textMuted }]}>
+                            {pm.isArchived
+                              ? 'Archived'
+                              : pm.isBuiltin
+                                ? 'Built-in'
+                                : 'Custom'}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={[styles.count, { color: theme.textSecondary }]}>
+                        {count === 0
+                          ? 'No transactions yet'
+                          : `${count} transaction${count === 1 ? '' : 's'}`}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
                   </View>
-                </View>
-              </View>
-
-              <View style={styles.actions}>
-                {!pm.isBuiltin ? (
-                  <Pressable onPress={() => openEdit(pm)} hitSlop={8}>
-                    <Ionicons name="create-outline" size={19} color={theme.primary} />
-                  </Pressable>
-                ) : null}
-                <Pressable onPress={() => setArchiveTarget(pm)} hitSlop={8}>
-                  <Ionicons
-                    name={pm.isArchived ? 'refresh-outline' : 'archive-outline'}
-                    size={19}
-                    color={theme.textSecondary}
-                  />
-                </Pressable>
-              </View>
-            </View>
-          </AppCard>
-        ))}
-      </View>
+                </AppCard>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
 
       <Modal
         visible={editorVisible}
@@ -213,7 +272,7 @@ export default function PaymentMethodsScreen() {
               { backgroundColor: theme.surface, borderColor: theme.border },
             ]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>
-              {editingMethod ? 'Rename Payment Method' : 'New Payment Method'}
+              New Payment Method
             </Text>
 
             <AppInput
@@ -245,7 +304,7 @@ export default function PaymentMethodsScreen() {
                           : theme.surfaceElevated,
                       },
                     ]}>
-                    <CategoryIcon icon={iconKey} color="#059669" size={32} />
+                    <CategoryIcon icon={iconKey} color={theme.primary} size={32} />
                   </Pressable>
                 );
               })}
@@ -273,36 +332,39 @@ export default function PaymentMethodsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-
-      <ConfirmDialog
-        visible={Boolean(archiveTarget)}
-        title={
-          archiveTarget?.isArchived
-            ? 'Restore Payment Method?'
-            : 'Archive Payment Method?'
-        }
-        message={
-          archiveTarget?.isArchived
-            ? `Restore "${archiveTarget.name}" for new transactions?`
-            : `Archive "${archiveTarget?.name}"? Historical transactions will preserve this payment method name.`
-        }
-        confirmLabel={archiveTarget?.isArchived ? 'Restore' : 'Archive'}
-        cancelLabel="Cancel"
-        loading={archiving}
-        onConfirm={() => void handleToggleArchive()}
-        onCancel={() => setArchiveTarget(null)}
-      />
     </AppScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  filterBar: {
-    gap: Spacing.two,
+  headerIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  hint: {
-    fontSize: 12,
-    lineHeight: 17,
+  pressed: {
+    opacity: 0.78,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.three - 2,
+    minHeight: 42,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    paddingVertical: 6,
+  },
+  filterBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   toggleChip: {
     alignSelf: 'flex-start',
@@ -325,6 +387,7 @@ const styles = StyleSheet.create({
   },
   meta: {
     flex: 1,
+    gap: 2,
   },
   nameRow: {
     flexDirection: 'row',
@@ -344,9 +407,8 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
-  actions: {
-    flexDirection: 'row',
-    gap: Spacing.three - 2,
+  count: {
+    fontSize: 12,
   },
   backdrop: {
     flex: 1,

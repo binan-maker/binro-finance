@@ -48,8 +48,10 @@ describe('money utilities (0, 2, and 3 decimal minor units)', () => {
   test('formats minor units to major input and display string', () => {
     expect(formatMinorToMajorInput(123450, 'INR')).toBe('1234.50');
     expect(formatMoney(123450, 'INR')).toBe('₹1,234.50');
-    expect(formatMoney(-500, 'USD')).toBe('-$5.00');
-    expect(formatMoney(500, 'USD', { showSign: true })).toBe('+$5.00');
+    expect(formatMoney(-500, 'USD')).toBe('-$5');
+    expect(formatMoney(500, 'USD', { showSign: true })).toBe('+$5');
+    expect(formatMoney(-550, 'USD')).toBe('-$5.50');
+    expect(formatMoney(550, 'USD', { showSign: true })).toBe('+$5.50');
   });
 });
 

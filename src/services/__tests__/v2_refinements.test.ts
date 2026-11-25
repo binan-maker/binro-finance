@@ -8,6 +8,7 @@ import {
 } from '@/services/calculations/financialCalculations';
 import type { Category, PaymentMethodRecord, Transaction } from '@/types/models';
 import type { TransactionFilterState } from '@/types/reports';
+import { resolveCurrencyCodeFromLocales } from '@/services/currency/localeCurrencyResolver';
 import {
   formatTransactionDateTimeRowLabel,
   normalizeDateRange,
@@ -376,9 +377,10 @@ describe('V2 Refinements: Filters, Dynamic Years, Dashboard Comparison & Reports
   });
 
   test('formats balance money with symbolSpace and formats Home transaction row date/time labels', () => {
-    expect(formatMoney(200000, 'USD', { symbolSpace: true })).toBe('$ 2,000.00');
+    expect(formatMoney(200000, 'USD', { symbolSpace: true })).toBe('$ 2,000');
     expect(formatMoney(123450, 'INR', { symbolSpace: true })).toBe('₹ 1,234.50');
-    expect(formatMoney(-500, 'USD', { symbolSpace: true })).toBe('-$ 5.00');
+    expect(formatMoney(-500, 'USD', { symbolSpace: true })).toBe('-$ 5');
+    expect(formatMoney(-550, 'USD', { symbolSpace: true })).toBe('-$ 5.50');
 
     const localTodayEvening = new Date(2026, 10, 25, 20, 15, 0).toISOString();
     const localYesterdayEvening = new Date(2026, 10, 24, 17, 27, 0).toISOString();
@@ -408,5 +410,14 @@ describe('V2 Refinements: Filters, Dynamic Years, Dashboard Comparison & Reports
         '2026-11-25',
       ),
     ).toBe('10 Nov 2026, 10:30 AM');
+  });
+
+  test('resolves regional currencies and safe fallback for regions without currency', () => {
+    expect(resolveCurrencyCodeFromLocales([{ regionCode: 'IN' }])).toBe('INR');
+    expect(resolveCurrencyCodeFromLocales([{ regionCode: 'AE' }])).toBe('AED');
+    expect(resolveCurrencyCodeFromLocales([{ regionCode: 'US' }])).toBe('USD');
+    expect(resolveCurrencyCodeFromLocales([{ regionCode: 'SA' }])).toBe('SAR');
+    expect(resolveCurrencyCodeFromLocales([{ regionCode: 'AQ' }])).toBe('USD');
+    expect(resolveCurrencyCodeFromLocales([{ languageTag: 'en-GB' }])).toBe('GBP');
   });
 });

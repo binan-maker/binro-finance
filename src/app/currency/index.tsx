@@ -13,13 +13,20 @@ export default function CurrencyScreen() {
   const theme = useTheme();
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
-  const isDraftMode = params.mode === 'draft';
+  const mode = params.mode ?? 'default';
+  const isDraftMode = mode === 'draft';
+  const isOnboardingMode = mode === 'onboarding';
+  const isOpeningBalanceMode = mode === 'openingBalance';
 
   const currencies = useAppStore((s) => s.currencies);
   const settings = useAppStore((s) => s.settings);
   const transactionDraft = useAppStore((s) => s.transactionDraft);
+  const onboardingCurrencyCode = useAppStore((s) => s.onboardingCurrencyCode);
+  const openingBalanceDraft = useAppStore((s) => s.openingBalanceDraft);
   const updateSettings = useAppStore((s) => s.updateSettings);
   const patchTransactionDraft = useAppStore((s) => s.patchTransactionDraft);
+  const setOnboardingCurrencyCode = useAppStore((s) => s.setOnboardingCurrencyCode);
+  const setOpeningBalanceDraft = useAppStore((s) => s.setOpeningBalanceDraft);
 
   const [search, setSearch] = useState('');
   const [savingCode, setSavingCode] = useState<string | null>(null);
@@ -28,7 +35,11 @@ export default function CurrencyScreen() {
   const selectedCode = (
     isDraftMode && transactionDraft?.currencyCode
       ? transactionDraft.currencyCode
-      : settings.currencyCode
+      : isOnboardingMode && onboardingCurrencyCode
+        ? onboardingCurrencyCode
+        : isOpeningBalanceMode && openingBalanceDraft?.currencyCode
+          ? openingBalanceDraft.currencyCode
+          : settings.currencyCode
   ).toUpperCase();
 
   const filtered = useMemo(() => {
@@ -68,6 +79,26 @@ export default function CurrencyScreen() {
       return;
     }
 
+    if (isOnboardingMode) {
+      setOnboardingCurrencyCode(currency.code);
+      if (router.canGoBack()) {
+        router.back();
+      }
+      return;
+    }
+
+    if (isOpeningBalanceMode) {
+      setOpeningBalanceDraft({
+        currencyCode: currency.code,
+        amountText: openingBalanceDraft?.amountText ?? '',
+        reopenOnFocus: true,
+      });
+      if (router.canGoBack()) {
+        router.back();
+      }
+      return;
+    }
+
     setSavingCode(currency.code);
     try {
       await updateSettings({
@@ -86,10 +117,13 @@ export default function CurrencyScreen() {
     }
   };
 
+  const screenTitle =
+    isDraftMode || isOpeningBalanceMode ? 'Select Currency' : 'Default Currency';
+
   return (
     <AppScreen scrollable={false} edges={['top', 'bottom', 'left', 'right']}>
       <AppHeader
-        title={isDraftMode ? 'Select Currency' : 'Default Currency'}
+        title={screenTitle}
         showBack
       />
 

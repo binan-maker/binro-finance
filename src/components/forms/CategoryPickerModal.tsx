@@ -119,8 +119,12 @@ export function CategoryPickerModal({
             <Text style={[styles.sheetTitle, { color: theme.text }]}>
               Select Category
             </Text>
-            <Pressable onPress={onClose} hitSlop={8} accessibilityRole="button">
-              <Ionicons name="close" size={22} color={theme.textSecondary} />
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Close category selector">
+              <Ionicons name="chevron-down" size={22} color={theme.textSecondary} />
             </Pressable>
           </View>
 

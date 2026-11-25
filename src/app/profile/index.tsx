@@ -10,7 +10,7 @@ import {
   AppInput,
   AppScreen,
 } from '@/components/common';
-import { Radius, Spacing } from '@/constants/theme';
+import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/store/app-store';
 

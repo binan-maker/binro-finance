@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -19,7 +20,6 @@ import {
   AppInput,
   AppScreen,
   CategoryIcon,
-  ConfirmDialog,
   EmptyState,
   SegmentedControl,
   type SegmentOption,
@@ -37,29 +37,25 @@ import { validateCategoryName } from '@/utils/validation';
 
 export default function CategoriesScreen() {
   const theme = useTheme();
+  const router = useRouter();
 
   const currencies = useAppStore((s) => s.currencies);
   const categories = useAppStore((s) => s.categories);
   const transactions = useAppStore((s) => s.transactions);
   const createCategory = useAppStore((s) => s.createCategory);
-  const updateCategory = useAppStore((s) => s.updateCategory);
 
   const [selectedType, setSelectedType] = useState<CategoryType>('expense');
+  const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showArchived, setShowArchived] = useState(false);
 
   const [editorVisible, setEditorVisible] = useState(false);
-  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [nameInput, setNameInput] = useState('');
   const [parentIdInput, setParentIdInput] = useState<string | null>(null);
   const [iconInput, setIconInput] = useState<string>(CATEGORY_ICON_OPTIONS[0]);
   const [colorInput, setColorInput] = useState<string>(CATEGORY_COLOR_OPTIONS[0]);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-
-  const [archiveTarget, setArchiveTarget] = useState<Category | null>(null);
-  const [archiving, setArchiving] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
 
   const typeOptions = useMemo<readonly SegmentOption<CategoryType>[]>(
     () => [
@@ -104,13 +100,9 @@ export default function CategoriesScreen() {
   const parentCandidates = useMemo(
     () =>
       categories.filter(
-        (c) =>
-          c.type === (editingCategory?.type ?? selectedType) &&
-          !c.isArchived &&
-          c.parentId === null &&
-          c.id !== editingCategory?.id,
+        (c) => c.type === selectedType && !c.isArchived && c.parentId === null,
       ),
-    [categories, editingCategory, selectedType],
+    [categories, selectedType],
   );
 
   const orderedCategories = useMemo(() => {
@@ -147,7 +139,6 @@ export default function CategoriesScreen() {
   );
 
   const openCreateModal = () => {
-    setEditingCategory(null);
     setNameInput('');
     setParentIdInput(null);
     setIconInput(selectedType === 'income' ? 'briefcase' : 'tag');
@@ -156,17 +147,7 @@ export default function CategoriesScreen() {
     setEditorVisible(true);
   };
 
-  const openEditModal = (cat: Category) => {
-    setEditingCategory(cat);
-    setNameInput(cat.name);
-    setParentIdInput(cat.parentId);
-    setIconInput(cat.icon);
-    setColorInput(cat.color);
-    setEditorError(null);
-    setEditorVisible(true);
-  };
-
-  const handleSaveCategory = async () => {
+  const handleCreateCategory = async () => {
     if (saving) return;
     setEditorError(null);
 
@@ -178,9 +159,8 @@ export default function CategoriesScreen() {
 
     const duplicate = categories.find(
       (c) =>
-        c.type === (editingCategory?.type ?? selectedType) &&
-        c.name.toLowerCase() === validation.value!.toLowerCase() &&
-        c.id !== editingCategory?.id,
+        c.type === selectedType &&
+        c.name.toLowerCase() === validation.value!.toLowerCase(),
     );
     if (duplicate) {
       setEditorError('A category with this name already exists.');
@@ -189,22 +169,13 @@ export default function CategoriesScreen() {
 
     setSaving(true);
     try {
-      if (editingCategory) {
-        await updateCategory(editingCategory.id, {
-          name: validation.value,
-          parentId: parentIdInput,
-          icon: iconInput,
-          color: colorInput,
-        });
-      } else {
-        await createCategory({
-          name: validation.value,
-          type: selectedType,
-          parentId: parentIdInput,
-          icon: iconInput,
-          color: colorInput,
-        });
-      }
+      await createCategory({
+        name: validation.value,
+        type: selectedType,
+        parentId: parentIdInput,
+        icon: iconInput,
+        color: colorInput,
+      });
       setEditorVisible(false);
     } catch (error) {
       setEditorError(
@@ -215,38 +186,77 @@ export default function CategoriesScreen() {
     }
   };
 
-  const handleToggleArchive = async () => {
-    if (!archiveTarget || archiving) return;
-    setArchiving(true);
-    setActionError(null);
-    try {
-      await updateCategory(archiveTarget.id, {
-        isArchived: !archiveTarget.isArchived,
-      });
-      setArchiveTarget(null);
-    } catch {
-      setArchiveTarget(null);
-      setActionError('Unable to update category status. Please try again.');
-    } finally {
-      setArchiving(false);
-    }
-  };
-
   return (
-    <AppScreen edges={['top', 'bottom', 'left', 'right']}>
+    <AppScreen
+      edges={['top', 'bottom', 'left', 'right']}
+      footer={
+        <AppButton
+          label="Add Category"
+          size="lg"
+          onPress={openCreateModal}
+          fullWidth
+        />
+      }>
       <AppHeader
         title="Categories"
-        subtitle={`${orderedCategories.length} ${selectedType} categories`}
         showBack
         rightAction={
-          <AppButton
-            label="Add"
-            size="sm"
-            icon={<Ionicons name="add" size={16} color={theme.primaryText} />}
-            onPress={openCreateModal}
-          />
+          <Pressable
+            onPress={() => {
+              if (searchVisible && searchQuery.length > 0) {
+                setSearchQuery('');
+              }
+              setSearchVisible((v) => !v);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Search categories"
+            style={({ pressed }) => [
+              styles.headerIconBtn,
+              {
+                backgroundColor:
+                  searchVisible || searchQuery.length > 0
+                    ? theme.primarySoft
+                    : theme.surface,
+                borderColor:
+                  searchVisible || searchQuery.length > 0
+                    ? theme.primary
+                    : theme.border,
+              },
+              pressed && styles.pressed,
+            ]}>
+            <Ionicons
+              name={searchVisible ? 'close' : 'search'}
+              size={19}
+              color={
+                searchVisible || searchQuery.length > 0 ? theme.primary : theme.text
+              }
+            />
+          </Pressable>
         }
       />
+
+      {searchVisible ? (
+        <View
+          style={[
+            styles.searchBar,
+            { backgroundColor: theme.surface, borderColor: theme.border },
+          ]}>
+          <Ionicons name="search" size={18} color={theme.textMuted} />
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search categories"
+            placeholderTextColor={theme.textMuted}
+            autoFocus
+            style={[styles.searchInput, { color: theme.text }]}
+          />
+          {searchQuery.length > 0 ? (
+            <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
+              <Ionicons name="close-circle" size={18} color={theme.textMuted} />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
 
       <SegmentedControl
         options={typeOptions}
@@ -254,31 +264,7 @@ export default function CategoriesScreen() {
         onChange={setSelectedType}
       />
 
-      {/* Searchable bar for large category sets */}
-      <View
-        style={[
-          styles.searchBar,
-          { backgroundColor: theme.surface, borderColor: theme.border },
-        ]}>
-        <Ionicons name="search" size={18} color={theme.textMuted} />
-        <TextInput
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder="Search categories..."
-          placeholderTextColor={theme.textMuted}
-          style={[styles.searchInput, { color: theme.text }]}
-        />
-        {searchQuery.length > 0 ? (
-          <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
-            <Ionicons name="close-circle" size={18} color={theme.textMuted} />
-          </Pressable>
-        ) : null}
-      </View>
-
       <View style={styles.filterBar}>
-        <Text style={[styles.hintText, { color: theme.textSecondary }]}>
-          Archiving hides a category from new forms while preserving historical names on past transactions.
-        </Text>
         <Pressable
           onPress={() => setShowArchived((v) => !v)}
           style={[
@@ -299,10 +285,6 @@ export default function CategoriesScreen() {
           </Text>
         </Pressable>
       </View>
-
-      {actionError ? (
-        <Text style={[styles.errorBanner, { color: theme.danger }]}>{actionError}</Text>
-      ) : null}
 
       {orderedCategories.length === 0 ? (
         <EmptyState
@@ -325,73 +307,55 @@ export default function CategoriesScreen() {
             const isSub = Boolean(cat.parentId) && !searchQuery;
 
             return (
-              <AppCard key={cat.id} style={isSub ? styles.subCard : undefined}>
-                <View style={styles.catRow}>
-                  <CategoryIcon icon={cat.icon} color={cat.color} size={40} />
-                  <View style={styles.catMeta}>
-                    <View style={styles.nameRow}>
-                      <Text style={[styles.catName, { color: theme.text }]}>
-                        {cat.name}
-                      </Text>
-                      {cat.isArchived ? (
-                        <View
-                          style={[
-                            styles.badge,
-                            { backgroundColor: theme.surfaceElevated },
-                          ]}>
-                          <Text
-                            style={[styles.badgeText, { color: theme.textMuted }]}>
-                            Archived
-                          </Text>
-                        </View>
+              <Pressable
+                key={cat.id}
+                onPress={() => router.push(`/categories/${cat.id}`)}
+                accessibilityRole="button"
+                accessibilityLabel={cat.name}
+                style={({ pressed }) => [pressed && styles.pressed]}>
+                <AppCard style={isSub ? styles.subCard : undefined}>
+                  <View style={styles.catRow}>
+                    <CategoryIcon icon={cat.icon} color={cat.color} size={40} />
+                    <View style={styles.catMeta}>
+                      <View style={styles.nameRow}>
+                        <Text style={[styles.catName, { color: theme.text }]}>
+                          {cat.name}
+                        </Text>
+                        {cat.isArchived ? (
+                          <View
+                            style={[
+                              styles.badge,
+                              { backgroundColor: theme.surfaceElevated },
+                            ]}>
+                            <Text
+                              style={[styles.badgeText, { color: theme.textMuted }]}>
+                              Archived
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      {parentName ? (
+                        <Text style={[styles.parentLabel, { color: theme.primary }]}>
+                          Subcategory of {parentName}
+                        </Text>
                       ) : null}
-                    </View>
-                    {parentName ? (
-                      <Text style={[styles.parentLabel, { color: theme.primary }]}>
-                        Subcategory of {parentName}
+                      <Text style={[styles.catTotal, { color: theme.textSecondary }]}>
+                        {summaryParts.length > 0
+                          ? `${stat?.count ?? 0} tx · ${summaryParts.join(' · ')}`
+                          : 'No transactions yet'}
                       </Text>
-                    ) : null}
-                    <Text style={[styles.catTotal, { color: theme.textSecondary }]}>
-                      {summaryParts.length > 0
-                        ? `${stat?.count ?? 0} tx · ${summaryParts.join(' · ')}`
-                        : 'No transactions yet'}
-                    </Text>
-                  </View>
+                    </View>
 
-                  <View style={styles.rowActions}>
-                    <Pressable
-                      onPress={() => openEditModal(cat)}
-                      hitSlop={8}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Edit ${cat.name}`}>
-                      <Ionicons
-                        name="create-outline"
-                        size={19}
-                        color={theme.primary}
-                      />
-                    </Pressable>
-                    <Pressable
-                      onPress={() => setArchiveTarget(cat)}
-                      hitSlop={8}
-                      accessibilityRole="button"
-                      accessibilityLabel={
-                        cat.isArchived ? `Restore ${cat.name}` : `Archive ${cat.name}`
-                      }>
-                      <Ionicons
-                        name={cat.isArchived ? 'refresh-outline' : 'archive-outline'}
-                        size={19}
-                        color={theme.textSecondary}
-                      />
-                    </Pressable>
+                    <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
                   </View>
-                </View>
-              </AppCard>
+                </AppCard>
+              </Pressable>
             );
           })}
         </View>
       )}
 
-      {/* Add / Edit Category Modal */}
+      {/* Create Category Modal */}
       <Modal
         visible={editorVisible}
         transparent
@@ -410,7 +374,7 @@ export default function CategoriesScreen() {
               { backgroundColor: theme.surface, borderColor: theme.border },
             ]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>
-              {editingCategory ? 'Edit Category' : `New ${selectedType} Category`}
+              {selectedType === 'income' ? 'New Income Category' : 'New Expense Category'}
             </Text>
 
             <ScrollView
@@ -551,7 +515,7 @@ export default function CategoriesScreen() {
               <View style={styles.flex1}>
                 <AppButton
                   label="Save"
-                  onPress={() => void handleSaveCategory()}
+                  onPress={() => void handleCreateCategory()}
                   loading={saving}
                   fullWidth
                 />
@@ -560,26 +524,22 @@ export default function CategoriesScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-
-      <ConfirmDialog
-        visible={Boolean(archiveTarget)}
-        title={archiveTarget?.isArchived ? 'Restore Category?' : 'Archive Category?'}
-        message={
-          archiveTarget?.isArchived
-            ? `Restore "${archiveTarget.name}" so it appears when adding new transactions?`
-            : `Archive "${archiveTarget?.name}"? Existing transactions will keep their historical category.`
-        }
-        confirmLabel={archiveTarget?.isArchived ? 'Restore' : 'Archive'}
-        cancelLabel="Cancel"
-        loading={archiving}
-        onConfirm={() => void handleToggleArchive()}
-        onCancel={() => setArchiveTarget(null)}
-      />
     </AppScreen>
   );
 }
 
 const styles = StyleSheet.create({
+  headerIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pressed: {
+    opacity: 0.78,
+  },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -595,11 +555,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   filterBar: {
-    gap: Spacing.two,
-  },
-  hintText: {
-    fontSize: 12,
-    lineHeight: 17,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   toggleChip: {
     alignSelf: 'flex-start',
@@ -651,11 +608,6 @@ const styles = StyleSheet.create({
   },
   catTotal: {
     fontSize: 12,
-  },
-  rowActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.three - 4,
   },
   modalBackdrop: {
     flex: 1,
@@ -721,9 +673,5 @@ const styles = StyleSheet.create({
   },
   flex1: {
     flex: 1,
-  },
-  errorBanner: {
-    fontSize: 13,
-    fontWeight: '600',
   },
 });

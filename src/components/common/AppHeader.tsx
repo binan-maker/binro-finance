@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Spacing } from '@/constants/theme';
@@ -24,6 +24,8 @@ export function AppHeader({
   rightAction,
 }: AppHeaderProps) {
   const theme = useTheme();
+  const [leftWidth, setLeftWidth] = useState(0);
+  const [rightWidth, setRightWidth] = useState(0);
 
   const handleBack = () => {
     if (onBackPress) {
@@ -33,29 +35,35 @@ export function AppHeader({
     }
   };
 
+  const balancedSideWidth = Math.max(42, leftWidth, rightWidth);
+
   return (
     <View style={[styles.container, subtitle ? styles.containerWithSubtitle : null]}>
-      <View style={styles.leftSlot}>
-        {showBack ? (
-          <Pressable
-            onPress={handleBack}
-            accessibilityRole="button"
-            accessibilityLabel="Go back"
-            style={({ pressed }) => [
-              styles.backButton,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-              pressed && styles.pressed,
-            ]}>
-            <Ionicons name="arrow-back" size={19} color={theme.text} />
-          </Pressable>
-        ) : (
-          leftAction
-        )}
+      <View style={[styles.leftSlot, { minWidth: balancedSideWidth }]}>
+        <View
+          onLayout={(e) => {
+            const next = Math.ceil(e.nativeEvent.layout.width);
+            if (next !== leftWidth) setLeftWidth(next);
+          }}>
+          {showBack ? (
+            <Pressable
+              onPress={handleBack}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+              style={({ pressed }) => [
+                styles.backButton,
+                { backgroundColor: theme.surface, borderColor: theme.border },
+                pressed && styles.pressed,
+              ]}>
+              <Ionicons name="arrow-back" size={19} color={theme.text} />
+            </Pressable>
+          ) : (
+            leftAction
+          )}
+        </View>
       </View>
 
-      <View
-        pointerEvents="none"
-        style={[styles.centerOverlay, rightAction ? styles.centerWideInset : styles.centerStdInset]}>
+      <View style={styles.centerSlot}>
         <Text
           style={[styles.title, { color: theme.text }]}
           numberOfLines={1}
@@ -69,29 +77,34 @@ export function AppHeader({
         ) : null}
       </View>
 
-      <View style={styles.rightSlot}>{rightAction}</View>
+      <View style={[styles.rightSlot, { minWidth: balancedSideWidth }]}>
+        <View
+          onLayout={(e) => {
+            const next = Math.ceil(e.nativeEvent.layout.width);
+            if (next !== rightWidth) setRightWidth(next);
+          }}>
+          {rightAction}
+        </View>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    position: 'relative',
     minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: Spacing.two,
     paddingVertical: Spacing.one,
   },
   containerWithSubtitle: {
     minHeight: 52,
   },
   leftSlot: {
-    minWidth: 42,
-    height: 40,
+    minHeight: 40,
     alignItems: 'flex-start',
     justifyContent: 'center',
-    zIndex: 2,
   },
   backButton: {
     width: 38,
@@ -101,22 +114,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  centerOverlay: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
+  centerSlot: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 1,
-    zIndex: 1,
-  },
-  centerStdInset: {
-    left: 50,
-    right: 50,
-  },
-  centerWideInset: {
-    left: 68,
-    right: 68,
   },
   title: {
     fontSize: 20,
@@ -130,11 +132,9 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   rightSlot: {
-    minWidth: 42,
-    height: 40,
+    minHeight: 40,
     alignItems: 'flex-end',
     justifyContent: 'center',
-    zIndex: 2,
   },
   pressed: {
     opacity: 0.7,

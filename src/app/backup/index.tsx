@@ -1,6 +1,8 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   AppButton,
@@ -22,6 +24,7 @@ import { formatDateTimeForDisplay } from '@/utils/date';
 
 export default function BackupScreen() {
   const theme = useTheme();
+  const router = useRouter();
   const appVersion = Constants.expoConfig?.version ?? '1.0.0';
 
   const settings = useAppStore((s) => s.settings);
@@ -59,12 +62,12 @@ export default function BackupScreen() {
       await addNotification({
         type: 'backup',
         title: 'CSV Export Completed',
-        body: `Exported ${res.count} transaction(s) with multi-currency amounts and tags.`,
+        body: `Exported ${res.count} transaction(s).`,
       });
       setStatusMessage(
         res.shared
           ? `Exported ${res.count} transactions to CSV.`
-          : `Saved CSV (${res.count} transactions) locally.`,
+          : `Saved CSV (${res.count} transactions).`,
       );
     } catch {
       setErrorMessage('Failed to export CSV file.');
@@ -82,16 +85,16 @@ export default function BackupScreen() {
       const res = await exportJsonBackupFile(appVersion);
       await addNotification({
         type: 'backup',
-        title: 'JSON Backup Created',
+        title: 'Backup Created',
         body: `Saved ${res.payload.transactions.length} transactions, ${res.payload.categories.length} categories, ${res.payload.tags?.length ?? 0} tags, and ${res.payload.budgets.length} budgets.`,
       });
       setStatusMessage(
         res.shared
-          ? `Exported full JSON backup (${res.payload.transactions.length} transactions, ${res.payload.categories.length} categories, ${res.payload.tags?.length ?? 0} tags, ${res.payload.budgets.length} budgets).`
-          : 'Saved complete JSON backup locally.',
+          ? `Backup exported (${res.payload.transactions.length} transactions).`
+          : 'Backup saved locally.',
       );
     } catch {
-      setErrorMessage('Failed to export JSON backup.');
+      setErrorMessage('Failed to export backup.');
     } finally {
       setBusyAction(null);
     }
@@ -116,7 +119,7 @@ export default function BackupScreen() {
         payload: picked.payload,
       });
     } catch {
-      setErrorMessage('Could not inspect selected backup file.');
+      setErrorMessage('Could not read selected backup file.');
     } finally {
       setBusyAction(null);
     }
@@ -132,7 +135,7 @@ export default function BackupScreen() {
       setReplaceConfirmVisible(false);
       setStagedBackup(null);
       setStatusMessage(
-        `Restore (${mode}) complete: added ${res.transactionsInserted} transactions (${res.transactionsSkipped} duplicates skipped), ${res.categoriesInserted} categories, ${res.tagsInserted} tags, ${res.paymentMethodsInserted} payment methods, and ${res.budgetsInserted} budgets.`,
+        `Restore (${mode}) complete: ${res.transactionsInserted} transactions added (${res.transactionsSkipped} skipped).`,
       );
     } catch {
       setReplaceConfirmVisible(false);
@@ -144,11 +147,7 @@ export default function BackupScreen() {
 
   return (
     <AppScreen edges={['top', 'bottom', 'left', 'right']}>
-      <AppHeader
-        title="Backup & Export"
-        subtitle="Multi-currency CSV export & JSON backup/restore"
-        showBack
-      />
+      <AppHeader title="Backup & Export" showBack />
 
       {statusMessage ? (
         <AppCard style={{ backgroundColor: theme.incomeSoft, borderColor: theme.income }}>
@@ -168,24 +167,22 @@ export default function BackupScreen() {
 
       <AppCard>
         <Text style={[styles.sectionTitle, { color: theme.text }]}>
-          Current Local Data
+          Local Records
         </Text>
         <Text style={[styles.bodyText, { color: theme.textSecondary }]}>
           {transactions.length} transactions · {categories.length} categories ·{' '}
-          {tags.length} tags · {paymentMethods.length} payment methods ·{' '}
+          {tags.length} tags · {paymentMethods.length} methods ·{' '}
           {budgets.length} budgets
         </Text>
       </AppCard>
 
       <AppCard>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>
-          Export CSV (Spreadsheet)
-        </Text>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Export CSV</Text>
         <Text style={[styles.bodyText, { color: theme.textSecondary }]}>
-          Export all recorded transactions with each transaction’s own currency, tags, and minor-unit precision.
+          Spreadsheet file preserving per-transaction currencies and tags.
         </Text>
         <AppButton
-          label="Export Transactions CSV"
+          label="Export CSV"
           variant="outline"
           onPress={() => void handleExportCsv()}
           loading={busyAction === 'csv'}
@@ -194,14 +191,12 @@ export default function BackupScreen() {
       </AppCard>
 
       <AppCard>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>
-          Complete JSON Backup
-        </Text>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Backup Data</Text>
         <Text style={[styles.bodyText, { color: theme.textSecondary }]}>
-          Export transactions, categories, tags, payment methods, budgets, and settings into a portable JSON backup file.
+          Full JSON archive of transactions, categories, tags, methods, budgets, and settings.
         </Text>
         <AppButton
-          label="Export JSON Backup"
+          label="Backup Data"
           onPress={() => void handleExportJson()}
           loading={busyAction === 'json'}
           disabled={Boolean(busyAction) && busyAction !== 'json'}
@@ -210,10 +205,10 @@ export default function BackupScreen() {
 
       <AppCard>
         <Text style={[styles.sectionTitle, { color: theme.text }]}>
-          Restore from JSON Backup
+          Restore Backup
         </Text>
         <Text style={[styles.bodyText, { color: theme.textSecondary }]}>
-          Select a BinRo Finance V1 or V2 JSON backup file. Safe Merge adds missing records and skips duplicates without overwriting existing records.
+          Import a BinRo Finance JSON backup using Safe Merge or Replace.
         </Text>
 
         {!stagedBackup ? (
@@ -227,7 +222,7 @@ export default function BackupScreen() {
         ) : (
           <View style={styles.stagedBox}>
             <Text style={[styles.stagedTitle, { color: theme.text }]}>
-              Ready to restore: {stagedBackup.fileName}
+              {stagedBackup.fileName}
             </Text>
             <Text style={[styles.bodyText, { color: theme.textSecondary }]}>
               Exported:{' '}
@@ -236,21 +231,20 @@ export default function BackupScreen() {
                 settings.dateFormat,
               )}
               {'\n'}
-              Contains {stagedBackup.payload.transactions.length} transactions,{' '}
-              {stagedBackup.payload.categories.length} categories,{' '}
-              {stagedBackup.payload.tags?.length ?? 0} tags,{' '}
-              {stagedBackup.payload.paymentMethods?.length ?? 0} payment methods,{' '}
+              {stagedBackup.payload.transactions.length} transactions ·{' '}
+              {stagedBackup.payload.categories.length} categories ·{' '}
+              {stagedBackup.payload.tags?.length ?? 0} tags ·{' '}
               {stagedBackup.payload.budgets.length} budgets
             </Text>
 
             <View style={styles.stagedActions}>
               <AppButton
-                label="Safe Merge (Skip Duplicates)"
+                label="Safe Merge"
                 onPress={() => void executeRestore('merge')}
                 loading={busyAction === 'restore'}
               />
               <AppButton
-                label="Replace All Local Data"
+                label="Replace All"
                 variant="danger"
                 onPress={() => setReplaceConfirmVisible(true)}
                 disabled={busyAction === 'restore'}
@@ -266,10 +260,25 @@ export default function BackupScreen() {
         )}
       </AppCard>
 
+      <AppCard>
+        <Pressable
+          onPress={() => router.push('/account')}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.actionRow, pressed && styles.pressed]}>
+          <View style={styles.actionLeft}>
+            <Ionicons name="shield-outline" size={20} color={theme.primary} />
+            <Text style={[styles.actionLabel, { color: theme.text }]}>
+              Account Management
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
+        </Pressable>
+      </AppCard>
+
       <ConfirmDialog
         visible={replaceConfirmVisible}
-        title="Replace All Existing Data?"
-        message="Replace mode will delete all current transactions, tags, custom payment methods, budgets, custom categories, and settings on this device and replace them with the selected backup."
+        title="Replace All Data?"
+        message="Replace mode overwrites all local data."
         confirmLabel="Replace All"
         cancelLabel="Cancel"
         destructive
@@ -306,5 +315,23 @@ const styles = StyleSheet.create({
   stagedActions: {
     gap: Spacing.two,
     marginTop: Spacing.one,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+  },
+  actionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  actionLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  pressed: {
+    opacity: 0.72,
   },
 });
