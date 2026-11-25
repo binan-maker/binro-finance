@@ -27,8 +27,12 @@ export default function BackupScreen() {
   const settings = useAppStore((s) => s.settings);
   const transactions = useAppStore((s) => s.transactions);
   const categories = useAppStore((s) => s.categories);
+  const tags = useAppStore((s) => s.tags);
+  const paymentMethods = useAppStore((s) => s.paymentMethods);
+  const currencies = useAppStore((s) => s.currencies);
   const budgets = useAppStore((s) => s.budgets);
   const restoreBackup = useAppStore((s) => s.restoreBackup);
+  const addNotification = useAppStore((s) => s.addNotification);
 
   const [busyAction, setBusyAction] = useState<'csv' | 'json' | 'pick' | 'restore' | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -49,6 +53,13 @@ export default function BackupScreen() {
       const res = await exportTransactionsCsvFile({
         transactions,
         currencyCode: settings.currencyCode,
+        tags,
+        currencies,
+      });
+      await addNotification({
+        type: 'backup',
+        title: 'CSV Export Completed',
+        body: `Exported ${res.count} transaction(s) with multi-currency amounts and tags.`,
       });
       setStatusMessage(
         res.shared
@@ -69,9 +80,14 @@ export default function BackupScreen() {
     setErrorMessage(null);
     try {
       const res = await exportJsonBackupFile(appVersion);
+      await addNotification({
+        type: 'backup',
+        title: 'JSON Backup Created',
+        body: `Saved ${res.payload.transactions.length} transactions, ${res.payload.categories.length} categories, ${res.payload.tags?.length ?? 0} tags, and ${res.payload.budgets.length} budgets.`,
+      });
       setStatusMessage(
         res.shared
-          ? `Exported full JSON backup (${res.payload.transactions.length} transactions, ${res.payload.categories.length} categories, ${res.payload.budgets.length} budgets).`
+          ? `Exported full JSON backup (${res.payload.transactions.length} transactions, ${res.payload.categories.length} categories, ${res.payload.tags?.length ?? 0} tags, ${res.payload.budgets.length} budgets).`
           : 'Saved complete JSON backup locally.',
       );
     } catch {
@@ -116,7 +132,7 @@ export default function BackupScreen() {
       setReplaceConfirmVisible(false);
       setStagedBackup(null);
       setStatusMessage(
-        `Restore (${mode}) complete: added ${res.transactionsInserted} transactions (${res.transactionsSkipped} duplicates skipped), ${res.categoriesInserted} categories, and ${res.budgetsInserted} budgets.`,
+        `Restore (${mode}) complete: added ${res.transactionsInserted} transactions (${res.transactionsSkipped} duplicates skipped), ${res.categoriesInserted} categories, ${res.tagsInserted} tags, ${res.paymentMethodsInserted} payment methods, and ${res.budgetsInserted} budgets.`,
       );
     } catch {
       setReplaceConfirmVisible(false);
@@ -127,10 +143,10 @@ export default function BackupScreen() {
   };
 
   return (
-    <AppScreen>
+    <AppScreen edges={['top', 'bottom', 'left', 'right']}>
       <AppHeader
         title="Backup & Export"
-        subtitle="Offline CSV export and JSON backup/restore"
+        subtitle="Multi-currency CSV export & JSON backup/restore"
         showBack
       />
 
@@ -156,6 +172,7 @@ export default function BackupScreen() {
         </Text>
         <Text style={[styles.bodyText, { color: theme.textSecondary }]}>
           {transactions.length} transactions · {categories.length} categories ·{' '}
+          {tags.length} tags · {paymentMethods.length} payment methods ·{' '}
           {budgets.length} budgets
         </Text>
       </AppCard>
@@ -165,7 +182,7 @@ export default function BackupScreen() {
           Export CSV (Spreadsheet)
         </Text>
         <Text style={[styles.bodyText, { color: theme.textSecondary }]}>
-          Export all recorded transactions as a CSV file for spreadsheet tools.
+          Export all recorded transactions with each transaction’s own currency, tags, and minor-unit precision.
         </Text>
         <AppButton
           label="Export Transactions CSV"
@@ -181,7 +198,7 @@ export default function BackupScreen() {
           Complete JSON Backup
         </Text>
         <Text style={[styles.bodyText, { color: theme.textSecondary }]}>
-          Export transactions, categories, budgets, and settings into a portable JSON backup file.
+          Export transactions, categories, tags, payment methods, budgets, and settings into a portable JSON backup file.
         </Text>
         <AppButton
           label="Export JSON Backup"
@@ -196,7 +213,7 @@ export default function BackupScreen() {
           Restore from JSON Backup
         </Text>
         <Text style={[styles.bodyText, { color: theme.textSecondary }]}>
-          Select a BinRo Finance JSON backup file. Safe Merge adds missing records and automatically skips duplicates without overwriting your existing records.
+          Select a BinRo Finance V1 or V2 JSON backup file. Safe Merge adds missing records and skips duplicates without overwriting existing records.
         </Text>
 
         {!stagedBackup ? (
@@ -221,6 +238,8 @@ export default function BackupScreen() {
               {'\n'}
               Contains {stagedBackup.payload.transactions.length} transactions,{' '}
               {stagedBackup.payload.categories.length} categories,{' '}
+              {stagedBackup.payload.tags?.length ?? 0} tags,{' '}
+              {stagedBackup.payload.paymentMethods?.length ?? 0} payment methods,{' '}
               {stagedBackup.payload.budgets.length} budgets
             </Text>
 
@@ -250,7 +269,7 @@ export default function BackupScreen() {
       <ConfirmDialog
         visible={replaceConfirmVisible}
         title="Replace All Existing Data?"
-        message="Replace mode will delete all current transactions, budgets, custom categories, and settings on this device and replace them with the selected backup."
+        message="Replace mode will delete all current transactions, tags, custom payment methods, budgets, custom categories, and settings on this device and replace them with the selected backup."
         confirmLabel="Replace All"
         cancelLabel="Cancel"
         destructive

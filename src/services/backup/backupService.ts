@@ -2,10 +2,11 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
+import type { CurrencyConfig } from '@/constants/currencies';
 import { repositories } from '@/database/repositories';
 import { buildTransactionsCsv } from '@/services/export/csvExport';
 import type { BackupPayload } from '@/types/database';
-import type { Transaction } from '@/types/models';
+import type { Tag, Transaction } from '@/types/models';
 import { getTodayISODate } from '@/utils/date';
 
 import {
@@ -40,8 +41,15 @@ async function writeAndShareTextFile(params: {
 export async function exportTransactionsCsvFile(params: {
   transactions: readonly Transaction[];
   currencyCode: string;
+  tags?: readonly Tag[];
+  currencies?: readonly CurrencyConfig[];
 }): Promise<{ count: number; fileUri: string; shared: boolean }> {
-  const csv = buildTransactionsCsv(params.transactions, params.currencyCode);
+  const csv = buildTransactionsCsv(
+    params.transactions,
+    params.currencyCode,
+    params.tags,
+    params.currencies,
+  );
   const stamp = getTodayISODate();
   const res = await writeAndShareTextFile({
     filename: `binro-finance-transactions-${stamp}.csv`,
@@ -76,7 +84,7 @@ export async function pickAndValidateJsonBackupFile(): Promise<{
   error?: string;
 }> {
   const result = await DocumentPicker.getDocumentAsync({
-    type: ['application/json', 'text/plain'],
+    type: '*/*',
     copyToCacheDirectory: true,
     multiple: false,
   });

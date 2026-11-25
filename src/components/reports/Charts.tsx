@@ -1,27 +1,172 @@
 import { StyleSheet, Text, View } from 'react-native';
-import Svg, { Circle, G, Rect } from 'react-native-svg';
+import Svg, {
+  Circle,
+  Defs,
+  G,
+  Line,
+  LinearGradient,
+  Path,
+  Rect,
+  Stop,
+} from 'react-native-svg';
 
+import type { CurrencyConfig } from '@/constants/currencies';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import type { CategoryBreakdownItem, DailyTotalItem } from '@/types/reports';
+import type { CategoryBreakdownItem, DailyTotalItem, TrendPoint } from '@/types/reports';
 import { formatMoney } from '@/utils/money';
+
+interface FinancialTrendLineChartProps {
+  points: readonly TrendPoint[];
+  currencyCode: string;
+  catalog?: readonly CurrencyConfig[];
+  height?: number;
+}
+
+export function FinancialTrendLineChart({
+  points,
+  currencyCode,
+  catalog,
+  height = 104,
+}: FinancialTrendLineChartProps) {
+  const theme = useTheme();
+
+  if (points.length === 0) {
+    return (
+      <View style={[styles.trendEmpty, { height: 64 }]}>
+        <Text style={[styles.emptyChartText, { color: theme.textMuted }]}>
+          Add transactions to see your balance trend.
+        </Text>
+      </View>
+    );
+  }
+
+  const width = 320;
+  const padX = 8;
+  const padTop = 10;
+  const padBottom = 10;
+  const plotHeight = height - padTop - padBottom;
+  const plotWidth = width - padX * 2;
+
+  const values = points.map((p) => p.valueMinor);
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  const span = maxVal - minVal;
+
+  const coords = points.map((pt, index) => {
+    const x =
+      points.length === 1
+        ? width / 2
+        : padX + (index / (points.length - 1)) * plotWidth;
+    const ratio = span === 0 ? 0.5 : (pt.valueMinor - minVal) / span;
+    const y = padTop + (1 - ratio) * plotHeight;
+    return { x, y, pt };
+  });
+
+  const linePath = coords
+    .map((c, idx) => `${idx === 0 ? 'M' : 'L'} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`)
+    .join(' ');
+
+  const first = coords[0];
+  const last = coords[coords.length - 1];
+  const areaPath =
+    coords.length > 1
+      ? `${linePath} L ${last.x.toFixed(1)} ${height} L ${first.x.toFixed(1)} ${height} Z`
+      : '';
+
+  return (
+    <View style={styles.trendLineWrap}>
+      <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
+        <Defs>
+          <LinearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0%" stopColor={theme.primary} stopOpacity="0.28" />
+            <Stop offset="100%" stopColor={theme.primary} stopOpacity="0.0" />
+          </LinearGradient>
+        </Defs>
+
+        <Line
+          x1={padX}
+          y1={padTop}
+          x2={width - padX}
+          y2={padTop}
+          stroke={theme.border}
+          strokeDasharray="3 4"
+          strokeWidth={1}
+        />
+        <Line
+          x1={padX}
+          y1={padTop + plotHeight / 2}
+          x2={width - padX}
+          y2={padTop + plotHeight / 2}
+          stroke={theme.border}
+          strokeDasharray="3 4"
+          strokeWidth={1}
+        />
+        <Line
+          x1={padX}
+          y1={height - padBottom}
+          x2={width - padX}
+          y2={height - padBottom}
+          stroke={theme.border}
+          strokeDasharray="3 4"
+          strokeWidth={1}
+        />
+
+        {areaPath ? <Path d={areaPath} fill="url(#trendGrad)" /> : null}
+
+        {coords.length > 1 ? (
+          <Path
+            d={linePath}
+            fill="none"
+            stroke={theme.primary}
+            strokeWidth={2.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ) : null}
+
+        <Circle
+          cx={last.x}
+          cy={last.y}
+          r={4}
+          fill={theme.primary}
+          stroke={theme.surface}
+          strokeWidth={2}
+        />
+      </Svg>
+
+      <View style={styles.trendAxisLabels}>
+        <Text style={[styles.axisText, { color: theme.textMuted }]}>
+          {points[0].label} ({formatMoney(points[0].valueMinor, currencyCode, { catalog })})
+        </Text>
+        <Text style={[styles.axisText, { color: theme.textMuted }]}>
+          {points[points.length - 1].label}
+        </Text>
+      </View>
+    </View>
+  );
+}
 
 interface CategoryDonutChartProps {
   items: readonly CategoryBreakdownItem[];
   totalMinor: number;
   currencyCode: string;
+  catalog?: readonly CurrencyConfig[];
   maxLegendItems?: number;
+  compact?: boolean;
 }
 
 export function CategoryDonutChart({
   items,
   totalMinor,
   currencyCode,
-  maxLegendItems = 6,
+  catalog,
+  maxLegendItems = 5,
+  compact = false,
 }: CategoryDonutChartProps) {
   const theme = useTheme();
-  const size = 148;
-  const strokeWidth = 22;
+  const size = compact ? 118 : 140;
+  const strokeWidth = compact ? 16 : 20;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
 
@@ -33,7 +178,31 @@ export function CategoryDonutChart({
     );
   }
 
-  const { segments } = items.reduce<{
+  // Group overflow categories into "Others" so card stays compact and complete
+  let displayItems: CategoryBreakdownItem[] = [];
+  if (items.length <= maxLegendItems) {
+    displayItems = [...items];
+  } else {
+    const top = items.slice(0, maxLegendItems - 1);
+    const rest = items.slice(maxLegendItems - 1);
+    const restTotal = rest.reduce((sum, i) => sum + i.totalMinor, 0);
+    const restCount = rest.reduce((sum, i) => sum + i.transactionCount, 0);
+    displayItems = [
+      ...top,
+      {
+        categoryId: '__others__',
+        categoryName: 'Others',
+        color: '#475569',
+        icon: 'tag',
+        totalMinor: restTotal,
+        percentage:
+          totalMinor > 0 ? Math.round((restTotal / totalMinor) * 1000) / 10 : 0,
+        transactionCount: restCount,
+      },
+    ];
+  }
+
+  const { segments } = displayItems.reduce<{
     offset: number;
     segments: {
       key: string;
@@ -57,11 +226,9 @@ export function CategoryDonutChart({
     { offset: 0, segments: [] },
   );
 
-  const visibleLegend = items.slice(0, maxLegendItems);
-
   return (
     <View style={styles.donutLayout}>
-      <View style={styles.donutWrap}>
+      <View style={[styles.donutWrap, { width: size, height: size }]}>
         <Svg width={size} height={size}>
           <G rotation="-90" origin={`${size / 2}, ${size / 2}`}>
             <Circle
@@ -96,23 +263,20 @@ export function CategoryDonutChart({
             style={[styles.donutCenterValue, { color: theme.text }]}
             numberOfLines={1}
             adjustsFontSizeToFit>
-            {formatMoney(totalMinor, currencyCode)}
+            {formatMoney(totalMinor, currencyCode, { catalog })}
           </Text>
         </View>
       </View>
 
       <View style={styles.legendList}>
-        {visibleLegend.map((item) => (
+        {displayItems.map((item) => (
           <View key={item.categoryId ?? item.categoryName} style={styles.legendRow}>
             <View style={[styles.legendDot, { backgroundColor: item.color }]} />
             <Text style={[styles.legendName, { color: theme.text }]} numberOfLines={1}>
               {item.categoryName}
             </Text>
-            <Text style={[styles.legendPct, { color: theme.textSecondary }]}>
-              {item.percentage.toFixed(0)}%
-            </Text>
-            <Text style={[styles.legendAmt, { color: theme.text }]}>
-              {formatMoney(item.totalMinor, currencyCode)}
+            <Text style={[styles.legendAmt, { color: theme.textSecondary }]} numberOfLines={1}>
+              {formatMoney(item.totalMinor, currencyCode, { catalog })}
             </Text>
           </View>
         ))}
@@ -125,16 +289,18 @@ interface IncomeExpenseBarChartProps {
   incomeMinor: number;
   expenseMinor: number;
   currencyCode: string;
+  catalog?: readonly CurrencyConfig[];
 }
 
 export function IncomeExpenseBarChart({
   incomeMinor,
   expenseMinor,
   currencyCode,
+  catalog,
 }: IncomeExpenseBarChartProps) {
   const theme = useTheme();
   const maxVal = Math.max(incomeMinor, expenseMinor, 1);
-  const chartHeight = 110;
+  const chartHeight = 108;
   const barWidth = 44;
 
   const incomeHeight = Math.max(
@@ -150,7 +316,7 @@ export function IncomeExpenseBarChart({
     <View style={styles.barComparisonWrap}>
       <View style={styles.barColumn}>
         <Text style={[styles.barValue, { color: theme.income }]}>
-          {formatMoney(incomeMinor, currencyCode)}
+          {formatMoney(incomeMinor, currencyCode, { catalog })}
         </Text>
         <Svg width={barWidth} height={chartHeight}>
           <Rect
@@ -158,7 +324,7 @@ export function IncomeExpenseBarChart({
             y={0}
             width={barWidth}
             height={chartHeight}
-            rx={8}
+            rx={10}
             fill={theme.surfaceElevated}
           />
           {incomeHeight > 0 ? (
@@ -167,7 +333,7 @@ export function IncomeExpenseBarChart({
               y={chartHeight - incomeHeight}
               width={barWidth}
               height={incomeHeight}
-              rx={8}
+              rx={10}
               fill={theme.income}
             />
           ) : null}
@@ -177,7 +343,7 @@ export function IncomeExpenseBarChart({
 
       <View style={styles.barColumn}>
         <Text style={[styles.barValue, { color: theme.expense }]}>
-          {formatMoney(expenseMinor, currencyCode)}
+          {formatMoney(expenseMinor, currencyCode, { catalog })}
         </Text>
         <Svg width={barWidth} height={chartHeight}>
           <Rect
@@ -185,7 +351,7 @@ export function IncomeExpenseBarChart({
             y={0}
             width={barWidth}
             height={chartHeight}
-            rx={8}
+            rx={10}
             fill={theme.surfaceElevated}
           />
           {expenseHeight > 0 ? (
@@ -194,7 +360,7 @@ export function IncomeExpenseBarChart({
               y={chartHeight - expenseHeight}
               width={barWidth}
               height={expenseHeight}
-              rx={8}
+              rx={10}
               fill={theme.expense}
             />
           ) : null}
@@ -208,11 +374,13 @@ export function IncomeExpenseBarChart({
 interface DailySpendingTrendChartProps {
   dailyTotals: readonly DailyTotalItem[];
   currencyCode: string;
+  catalog?: readonly CurrencyConfig[];
 }
 
 export function DailySpendingTrendChart({
   dailyTotals,
   currencyCode,
+  catalog,
 }: DailySpendingTrendChartProps) {
   const theme = useTheme();
   if (dailyTotals.length === 0) {
@@ -223,7 +391,6 @@ export function DailySpendingTrendChart({
     );
   }
 
-  // Bucket into at most 31 bars if range is a full year so SVG remains legible
   const bucketSize = dailyTotals.length > 31 ? Math.ceil(dailyTotals.length / 24) : 1;
   const buckets: { label: string; expenseMinor: number }[] = [];
 
@@ -249,7 +416,14 @@ export function DailySpendingTrendChart({
           {bucketSize > 1 ? `Grouped (${bucketSize}-day buckets)` : 'Daily expense trend'}
         </Text>
         <Text style={[styles.trendPeak, { color: theme.text }]}>
-          Peak: {formatMoney(maxExpense === 1 && buckets.every((b) => b.expenseMinor === 0) ? 0 : maxExpense, currencyCode)}
+          Peak:{' '}
+          {formatMoney(
+            maxExpense === 1 && buckets.every((b) => b.expenseMinor === 0)
+              ? 0
+              : maxExpense,
+            currencyCode,
+            { catalog },
+          )}
         </Text>
       </View>
 
@@ -292,35 +466,38 @@ const styles = StyleSheet.create({
     fontSize: 13,
     paddingVertical: Spacing.two,
   },
+  trendEmpty: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  trendLineWrap: {
+    gap: Spacing.one,
+  },
   donutLayout: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.three,
-    flexWrap: 'wrap',
   },
   donutWrap: {
-    width: 148,
-    height: 148,
     alignItems: 'center',
     justifyContent: 'center',
   },
   donutCenter: {
     position: 'absolute',
-    width: 90,
+    width: 76,
     alignItems: 'center',
   },
   donutCenterLabel: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
   },
   donutCenterValue: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '700',
     textAlign: 'center',
   },
   legendList: {
     flex: 1,
-    minWidth: 160,
     gap: Spacing.one + 2,
   },
   legendRow: {
@@ -329,19 +506,14 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
   },
   legendDot: {
-    width: 10,
-    height: 10,
+    width: 9,
+    height: 9,
     borderRadius: 5,
   },
   legendName: {
     flex: 1,
     fontSize: 13,
     fontWeight: '500',
-  },
-  legendPct: {
-    fontSize: 12,
-    width: 34,
-    textAlign: 'right',
   },
   legendAmt: {
     fontSize: 12,

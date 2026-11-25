@@ -37,8 +37,14 @@ export function AppScreen({
   const body = scrollable ? (
     <ScrollView
       style={styles.flex}
-      contentContainerStyle={[styles.scrollContent, contentStyle]}
+      contentContainerStyle={[
+        styles.scrollContent,
+        footer ? styles.scrollContentWithFooter : null,
+        contentStyle,
+      ]}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
       showsVerticalScrollIndicator={false}>
       <View style={styles.innerWidth}>{children}</View>
     </ScrollView>
@@ -48,14 +54,30 @@ export function AppScreen({
     </View>
   );
 
+  const innerContent = (
+    <>
+      {body}
+      {footer ? (
+        <View
+          style={[
+            styles.footer,
+            { backgroundColor: theme.background, borderTopColor: theme.border },
+          ]}>
+          <View style={styles.footerInner}>{footer}</View>
+        </View>
+      ) : null}
+    </>
+  );
+
   const wrappedBody = keyboardAvoiding ? (
     <KeyboardAvoidingView
       style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      {body}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
+      {innerContent}
     </KeyboardAvoidingView>
   ) : (
-    body
+    innerContent
   );
 
   return (
@@ -63,7 +85,6 @@ export function AppScreen({
       edges={edges}
       style={[styles.safeArea, { backgroundColor: theme.background }, style]}>
       {wrappedBody}
-      {footer}
     </SafeAreaView>
   );
 }
@@ -81,6 +102,9 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.five,
     alignItems: 'center',
   },
+  scrollContentWithFooter: {
+    paddingBottom: Spacing.four,
+  },
   staticContent: {
     paddingHorizontal: Spacing.three,
     paddingTop: Spacing.three,
@@ -90,5 +114,15 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: MaxContentWidth,
     gap: Spacing.three,
+  },
+  footer: {
+    borderTopWidth: 1,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two + 4,
+    alignItems: 'center',
+  },
+  footerInner: {
+    width: '100%',
+    maxWidth: MaxContentWidth,
   },
 });

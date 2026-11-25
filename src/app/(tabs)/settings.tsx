@@ -2,7 +2,15 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import {
   AppButton,
@@ -14,7 +22,8 @@ import {
   SegmentedControl,
   type SegmentOption,
 } from '@/components/common';
-import { SUPPORTED_CURRENCIES, getCurrencyConfig } from '@/constants/currencies';
+import { CurrencyPickerModal } from '@/components/forms/CurrencyPickerModal';
+import { getCurrencyConfig } from '@/constants/currencies';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/store/app-store';
@@ -41,28 +50,36 @@ export default function SettingsScreen() {
   const router = useRouter();
 
   const settings = useAppStore((s) => s.settings);
+  const currencies = useAppStore((s) => s.currencies);
   const updateSettings = useAppStore((s) => s.updateSettings);
   const clearAllLocalData = useAppStore((s) => s.clearAllLocalData);
 
   const [currencyModalVisible, setCurrencyModalVisible] = useState(false);
+  const [openingCurrencyModalVisible, setOpeningCurrencyModalVisible] = useState(false);
   const [dateModalVisible, setDateModalVisible] = useState(false);
   const [balanceModalVisible, setBalanceModalVisible] = useState(false);
   const [privacyModalVisible, setPrivacyModalVisible] = useState(false);
   const [clearConfirmVisible, setClearConfirmVisible] = useState(false);
 
   const [balanceInput, setBalanceInput] = useState('');
+  const [balanceCurrencyInput, setBalanceCurrencyInput] = useState(
+    settings.openingBalanceCurrencyCode || settings.currencyCode,
+  );
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [savingBalance, setSavingBalance] = useState(false);
   const [clearingData, setClearingData] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
 
-  const activeCurrency = getCurrencyConfig(settings.currencyCode);
+  const activeCurrency = getCurrencyConfig(settings.currencyCode, currencies);
+  const openingCurrency = getCurrencyConfig(balanceCurrencyInput, currencies);
   const appVersion = Constants.expoConfig?.version ?? '1.0.0';
   const todayISO = getTodayISODate();
 
   const openBalanceEditor = () => {
+    const obCurrency = settings.openingBalanceCurrencyCode || settings.currencyCode;
+    setBalanceCurrencyInput(obCurrency);
     setBalanceInput(
-      formatMinorToMajorInput(settings.openingBalanceMinor, settings.currencyCode),
+      formatMinorToMajorInput(settings.openingBalanceMinor, obCurrency, currencies),
     );
     setBalanceError(null);
     setBalanceModalVisible(true);
@@ -70,7 +87,11 @@ export default function SettingsScreen() {
 
   const handleSaveOpeningBalance = async () => {
     if (savingBalance) return;
-    const validation = validateNonNegativeAmountInput(balanceInput, settings.currencyCode);
+    const validation = validateNonNegativeAmountInput(
+      balanceInput,
+      balanceCurrencyInput,
+      currencies,
+    );
     if (!validation.valid || validation.value === undefined) {
       setBalanceError(validation.error ?? 'Enter a valid non-negative balance.');
       return;
@@ -78,7 +99,10 @@ export default function SettingsScreen() {
 
     setSavingBalance(true);
     try {
-      await updateSettings({ openingBalanceMinor: validation.value });
+      await updateSettings({
+        openingBalanceMinor: validation.value,
+        openingBalanceCurrencyCode: balanceCurrencyInput,
+      });
       setBalanceModalVisible(false);
     } catch {
       setBalanceError('Failed to save opening balance.');
@@ -159,7 +183,7 @@ export default function SettingsScreen() {
 
         <SettingsRow
           icon="cash-outline"
-          label="Currency"
+          label="Default Currency"
           value={`${activeCurrency.code} (${activeCurrency.symbol})`}
           onPress={() => setCurrencyModalVisible(true)}
         />
@@ -178,7 +202,11 @@ export default function SettingsScreen() {
         <SettingsRow
           icon="wallet-outline"
           label="Opening Balance"
-          value={formatMoney(settings.openingBalanceMinor, settings.currencyCode)}
+          value={formatMoney(
+            settings.openingBalanceMinor,
+            settings.openingBalanceCurrencyCode,
+            { catalog: currencies },
+          )}
           onPress={openBalanceEditor}
         />
       </AppCard>
@@ -187,17 +215,24 @@ export default function SettingsScreen() {
         <Text style={[styles.sectionTitle, { color: theme.text }]}>Manage</Text>
 
         <SettingsRow
-          icon="pricetags-outline"
+          icon="grid-outline"
           label="Categories"
           value="Income & Expense"
           onPress={() => router.push('/categories')}
         />
         <View style={[styles.divider, { backgroundColor: theme.border }]} />
         <SettingsRow
-          icon="pie-chart-outline"
-          label="Monthly Budgets"
-          value="Overall & Category"
-          onPress={() => router.push('/budgets')}
+          icon="pricetags-outline"
+          label="Tags"
+          value="Custom Labels"
+          onPress={() => router.push('/tags')}
+        />
+        <View style={[styles.divider, { backgroundColor: theme.border }]} />
+        <SettingsRow
+          icon="card-outline"
+          label="Payment Methods"
+          value="Built-in & Custom"
+          onPress={() => router.push('/payment-methods')}
         />
         <View style={[styles.divider, { backgroundColor: theme.border }]} />
         <SettingsRow
@@ -245,7 +280,7 @@ export default function SettingsScreen() {
       <AppCard>
         <Text style={[styles.sectionTitle, { color: theme.danger }]}>Danger Zone</Text>
         <Text style={[styles.dangerHint, { color: theme.textSecondary }]}>
-          Permanently remove all transactions, budgets, custom categories, and reset your opening balance on this device.
+          Permanently remove all transactions, tags, custom payment methods, custom categories, and reset your opening balance on this device.
         </Text>
         <AppButton
           label="Clear All Local Data"
@@ -254,58 +289,22 @@ export default function SettingsScreen() {
         />
       </AppCard>
 
-      {/* Currency Picker Modal */}
-      <Modal
+      {/* Searchable Currency Picker Modal */}
+      <CurrencyPickerModal
         visible={currencyModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setCurrencyModalVisible(false)}>
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setCurrencyModalVisible(false)}>
-          <Pressable
-            style={[
-              styles.modalSheet,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-            onPress={(e) => e.stopPropagation()}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>
-              Select Currency
-            </Text>
-            <ScrollView style={styles.modalList}>
-              {SUPPORTED_CURRENCIES.map((currency) => {
-                const selected = currency.code === settings.currencyCode;
-                return (
-                  <Pressable
-                    key={currency.code}
-                    onPress={() => void handleCurrencySelect(currency.code)}
-                    style={[
-                      styles.modalItem,
-                      {
-                        backgroundColor: selected
-                          ? theme.primarySoft
-                          : 'transparent',
-                        borderColor: theme.border,
-                      },
-                    ]}>
-                    <Text style={[styles.modalItemTitle, { color: theme.text }]}>
-                      {currency.symbol} {currency.code} — {currency.name}
-                    </Text>
-                    {selected ? (
-                      <Ionicons name="checkmark" size={18} color={theme.primary} />
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <AppButton
-              label="Close"
-              variant="outline"
-              onPress={() => setCurrencyModalVisible(false)}
-            />
-          </Pressable>
-        </Pressable>
-      </Modal>
+        currencies={currencies}
+        selectedCode={settings.currencyCode}
+        onSelect={(curr) => void handleCurrencySelect(curr.code)}
+        onClose={() => setCurrencyModalVisible(false)}
+      />
+
+      <CurrencyPickerModal
+        visible={openingCurrencyModalVisible}
+        currencies={currencies}
+        selectedCode={balanceCurrencyInput}
+        onSelect={(curr) => setBalanceCurrencyInput(curr.code)}
+        onClose={() => setOpeningCurrencyModalVisible(false)}
+      />
 
       {/* Date Format Modal */}
       <Modal
@@ -371,9 +370,9 @@ export default function SettingsScreen() {
         transparent
         animationType="fade"
         onRequestClose={() => setBalanceModalVisible(false)}>
-        <Pressable
+        <KeyboardAvoidingView
           style={styles.centerBackdrop}
-          onPress={() => setBalanceModalVisible(false)}>
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <Pressable
             style={[
               styles.dialogCard,
@@ -384,17 +383,32 @@ export default function SettingsScreen() {
               Edit Opening Balance
             </Text>
             <Text style={[styles.dangerHint, { color: theme.textSecondary }]}>
-              Updating your opening balance adjusts your current available balance without modifying historical transactions.
+              Opening balance stays linked to its own currency so changing your default currency never mutates past amounts.
             </Text>
+
+            <Pressable
+              onPress={() => setOpeningCurrencyModalVisible(true)}
+              style={[
+                styles.currencyPickButton,
+                { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
+              ]}>
+              <Text style={[styles.rowTitle, { color: theme.text }]}>
+                Currency: {openingCurrency.code} ({openingCurrency.symbol})
+              </Text>
+              <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
+            </Pressable>
+
             <AppInput
               label="Opening Balance"
-              prefix={activeCurrency.symbol}
+              prefix={openingCurrency.symbol}
               value={balanceInput}
               onChangeText={(text) => {
                 setBalanceInput(text);
                 if (balanceError) setBalanceError(null);
               }}
-              keyboardType={activeCurrency.minorUnits === 0 ? 'number-pad' : 'decimal-pad'}
+              keyboardType={
+                openingCurrency.minorUnits === 0 ? 'number-pad' : 'decimal-pad'
+              }
               error={balanceError}
             />
             <View style={styles.dialogButtons}>
@@ -417,7 +431,7 @@ export default function SettingsScreen() {
               </View>
             </View>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Privacy Policy Modal */}
@@ -439,7 +453,7 @@ export default function SettingsScreen() {
               Privacy Policy
             </Text>
             <Text style={[styles.dangerHint, { color: theme.textSecondary }]}>
-              BinRo Finance stores all your financial records locally on this device using SQLite. The app works completely offline and never sends transactions, balances, or personal data to any external server, analytics service, or third-party integration.
+              BinRo Finance stores all your financial records locally on this device using SQLite. Your transactions, balances, tags, and categories never leave your device unless you explicitly export a backup file.
             </Text>
             <AppButton
               label="Done"
@@ -454,7 +468,7 @@ export default function SettingsScreen() {
       <ConfirmDialog
         visible={clearConfirmVisible}
         title="Clear All Local Data?"
-        message="This will permanently delete every transaction, monthly budget, and custom category stored on this device. This action cannot be undone."
+        message="This will permanently delete every transaction, tag, custom payment method, and custom category stored on this device. This action cannot be undone."
         confirmLabel="Clear All Data"
         cancelLabel="Cancel"
         destructive
@@ -551,12 +565,12 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'flex-end',
   },
   centerBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: Spacing.four,
@@ -572,10 +586,19 @@ const styles = StyleSheet.create({
   dialogCard: {
     width: '100%',
     maxWidth: 400,
-    borderRadius: Radius.lg,
+    borderRadius: Radius.xl,
     borderWidth: 1,
     padding: Spacing.four,
     gap: Spacing.three,
+  },
+  currencyPickButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: Spacing.two + 3,
   },
   modalTitle: {
     fontSize: 18,

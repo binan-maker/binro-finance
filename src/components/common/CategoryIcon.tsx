@@ -7,10 +7,16 @@ interface CategoryIconProps {
   icon: string | null | undefined;
   color: string | null | undefined;
   size?: number;
+  rounded?: boolean;
 }
 
-export function CategoryIcon({ icon, color, size = 38 }: CategoryIconProps) {
-  const accent = color || '#546E7A';
+export function CategoryIcon({
+  icon,
+  color,
+  size = 40,
+  rounded = true,
+}: CategoryIconProps) {
+  const accent = color || '#059669';
   const glyph = resolveCategoryIconName(icon);
 
   return (
@@ -20,11 +26,11 @@ export function CategoryIcon({ icon, color, size = 38 }: CategoryIconProps) {
         {
           width: size,
           height: size,
-          borderRadius: Math.round(size / 2.6),
-          backgroundColor: `${accent}20`,
+          borderRadius: rounded ? Math.round(size / 2) : Math.round(size / 3),
+          backgroundColor: accent,
         },
       ]}>
-      <Ionicons name={glyph} size={Math.round(size * 0.5)} color={accent} />
+      <Ionicons name={glyph} size={Math.round(size * 0.48)} color="#FFFFFF" />
     </View>
   );
 }

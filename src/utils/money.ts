@@ -1,10 +1,14 @@
-import { getCurrencyConfig } from '@/constants/currencies';
+import { getCurrencyConfig, type CurrencyConfig } from '@/constants/currencies';
 
 /**
  * Parses a decimal string (e.g. "1234.50") into integer minor units (e.g. 123450)
  * using string splitting to avoid IEEE-754 floating-point precision loss.
  */
-export function parseMajorToMinor(rawInput: string, currencyCode: string): number | null {
+export function parseMajorToMinor(
+  rawInput: string,
+  currencyCode: string,
+  catalog?: readonly CurrencyConfig[],
+): number | null {
   const cleaned = rawInput.trim().replace(/,/g, '');
   if (!cleaned) {
     return null;
@@ -13,18 +17,18 @@ export function parseMajorToMinor(rawInput: string, currencyCode: string): numbe
   const isNegative = cleaned.startsWith('-');
   const unsigned = isNegative || cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
 
-  if (!/^\d+(\.\d+)?$/.test(unsigned)) {
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(unsigned)) {
     return null;
   }
 
-  const { minorUnits } = getCurrencyConfig(currencyCode);
-  const [wholePartRaw, fractionPartRaw = ''] = unsigned.split('.');
+  const { minorUnits } = getCurrencyConfig(currencyCode, catalog);
+  const [wholePartRaw = '0', fractionPartRaw = ''] = unsigned.split('.');
 
   if (minorUnits === 0 && fractionPartRaw.length > 0 && Number(fractionPartRaw) !== 0) {
     return null;
   }
 
-  const wholePart = Number.parseInt(wholePartRaw, 10);
+  const wholePart = wholePartRaw ? Number.parseInt(wholePartRaw, 10) : 0;
   if (!Number.isSafeInteger(wholePart)) {
     return null;
   }
@@ -33,7 +37,6 @@ export function parseMajorToMinor(rawInput: string, currencyCode: string): numbe
   const paddedFraction = fractionPartRaw.slice(0, minorUnits).padEnd(minorUnits, '0');
   const fractionPart = minorUnits > 0 ? Number.parseInt(paddedFraction, 10) : 0;
 
-  // Check if user provided extra non-zero digits beyond currency minor precision
   if (fractionPartRaw.length > minorUnits) {
     const extraDigits = fractionPartRaw.slice(minorUnits);
     if (!/^0+$/.test(extraDigits)) {
@@ -49,8 +52,12 @@ export function parseMajorToMinor(rawInput: string, currencyCode: string): numbe
   return isNegative ? -totalMinor : totalMinor;
 }
 
-export function formatMinorToMajorInput(amountMinor: number, currencyCode: string): string {
-  const { minorUnits } = getCurrencyConfig(currencyCode);
+export function formatMinorToMajorInput(
+  amountMinor: number,
+  currencyCode: string,
+  catalog?: readonly CurrencyConfig[],
+): string {
+  const { minorUnits } = getCurrencyConfig(currencyCode, catalog);
   if (minorUnits === 0) {
     return String(Math.trunc(amountMinor));
   }
@@ -67,9 +74,9 @@ export function formatMinorToMajorInput(amountMinor: number, currencyCode: strin
 export function formatMoney(
   amountMinor: number,
   currencyCode: string,
-  options?: { showSign?: boolean },
+  options?: { showSign?: boolean; catalog?: readonly CurrencyConfig[] },
 ): string {
-  const { symbol, minorUnits } = getCurrencyConfig(currencyCode);
+  const { symbol, minorUnits } = getCurrencyConfig(currencyCode, options?.catalog);
   const absMinor = Math.abs(Math.trunc(amountMinor));
   const scale = 10 ** minorUnits;
   const whole = Math.floor(absMinor / scale);
@@ -86,5 +93,6 @@ export function formatMoney(
     prefix = '+';
   }
 
-  return `${prefix}${symbol}${valueText}`;
+  const spacer = symbol.length > 2 ? ' ' : '';
+  return `${prefix}${symbol}${spacer}${valueText}`;
 }

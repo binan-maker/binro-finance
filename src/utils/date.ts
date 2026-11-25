@@ -95,7 +95,6 @@ export function enumerateDatesInRange(startDate: string, endDate: string): strin
 
   const dates: string[] = [];
   let cursor = startDate;
-  // Guard against accidental unbounded loops
   let guard = 0;
   while (cursor <= endDate && guard < 4000) {
     dates.push(cursor);
@@ -125,6 +124,31 @@ export function formatDateForDisplay(
     default:
       return `${pad2(day)} ${MONTH_SHORT_NAMES[month - 1]} ${year}`;
   }
+}
+
+export function formatRelativeDateLabel(
+  isoDate: string,
+  format: DateFormatPreference = 'DD MMM YYYY',
+  referenceToday?: string,
+): string {
+  const today = referenceToday ?? getTodayISODate();
+  const yesterday = addDaysToISODate(today, -1);
+
+  if (isoDate === today) return 'Today';
+  if (isoDate === yesterday) return 'Yesterday';
+  return formatDateForDisplay(isoDate, format);
+}
+
+export function formatTimeForDisplay(isoTimestamp: string): string {
+  const parsed = new Date(isoTimestamp);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+  const hours24 = parsed.getHours();
+  const minutes = pad2(parsed.getMinutes());
+  const period = hours24 >= 12 ? 'PM' : 'AM';
+  const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  return `${hours12}:${minutes} ${period}`;
 }
 
 export function formatDateTimeForDisplay(

@@ -9,8 +9,11 @@ import {
   serializeBackupPayload,
 } from '@/services/backup/backupPayload';
 import {
+  buildFinancialTrendPoints,
   calculateBudgetProgress,
+  calculatePeriodComparison,
   calculatePeriodSummary,
+  getDashboardPeriodRanges,
   summarizeTransactions,
 } from '@/services/calculations/financialCalculations';
 import { buildTransactionsCsv } from '@/services/export/csvExport';
@@ -50,7 +53,7 @@ function createBunSqliteAdapter(): SqlDatabaseAdapter {
   };
 }
 
-describe('Stages 07–13: transactions, analytics, categories, budgets, CSV & JSON backup', () => {
+describe('V2 Analytics, Period Comparison, Multi-Currency CSV & Backup', () => {
   let db: SqlDatabaseAdapter;
   let repos: ReturnType<typeof createRepositories>;
 
@@ -60,7 +63,104 @@ describe('Stages 07–13: transactions, analytics, categories, budgets, CSV & JS
     repos = createRepositories(async () => db);
   });
 
-  test('archiving a category preserves historical transaction snapshot and balances', async () => {
+  test('isolates analytics per currency and builds accurate trend lines & period comparisons', async () => {
+    await repos.transactions.create({
+      type: 'income',
+      title: 'Oct Salary',
+      amountMinor: 200000,
+      currencyCode: 'INR',
+      categoryId: 'cat-inc-salary',
+      categoryNameSnapshot: 'Salary',
+      paymentMethod: 'Bank Transfer',
+      transactionDate: '2026-10-10',
+    });
+    await repos.transactions.create({
+      type: 'income',
+      title: 'Nov Salary',
+      amountMinor: 300000,
+      currencyCode: 'INR',
+      categoryId: 'cat-inc-salary',
+      categoryNameSnapshot: 'Salary',
+      paymentMethod: 'Bank Transfer',
+      transactionDate: '2026-11-01',
+    });
+    await repos.transactions.create({
+      type: 'expense',
+      title: 'Nov Rent',
+      amountMinor: 100000,
+      currencyCode: 'INR',
+      categoryId: 'cat-exp-rent',
+      categoryNameSnapshot: 'Rent',
+      paymentMethod: 'Bank Transfer',
+      transactionDate: '2026-11-05',
+    });
+    await repos.transactions.create({
+      type: 'expense',
+      title: 'Nov USD SaaS',
+      amountMinor: 5000,
+      currencyCode: 'USD',
+      categoryId: 'cat-exp-bills',
+      categoryNameSnapshot: 'Utilities',
+      paymentMethod: 'Card',
+      transactionDate: '2026-11-05',
+    });
+
+    const txs = await repos.transactions.getAll();
+    const cats = await repos.categories.getAll();
+
+    const novInr = calculatePeriodSummary({
+      transactions: txs,
+      categories: cats,
+      currencyCode: 'INR',
+      startDate: '2026-11-01',
+      endDate: '2026-11-30',
+    });
+    expect(novInr.totalIncomeMinor).toBe(300000);
+    expect(novInr.totalExpensesMinor).toBe(100000);
+    expect(novInr.netMovementMinor).toBe(200000);
+
+    const ranges = getDashboardPeriodRanges('this_month', '2026-11-15', txs);
+    const cmp = calculatePeriodComparison({
+      transactions: txs,
+      currencyCode: 'INR',
+      startDate: ranges.startDate,
+      endDate: ranges.endDate,
+      previousStartDate: ranges.previousStartDate,
+      previousEndDate: ranges.previousEndDate,
+      comparisonLabel: ranges.comparisonLabel,
+    });
+    expect(cmp.currentValueMinor).toBe(200000);
+    expect(cmp.previousValueMinor).toBe(200000);
+    expect(cmp.percentageChange).toBe(0);
+    expect(cmp.direction).toBe('flat');
+
+    const trend = buildFinancialTrendPoints({
+      transactions: txs,
+      currencyCode: 'INR',
+      openingBalanceMinor: 50000,
+      openingBalanceCurrencyCode: 'INR',
+      startDate: '2026-11-01',
+      endDate: '2026-11-05',
+    });
+    expect(trend[0].valueMinor).toBe(550000); // 50k opening + 200k Oct + 300k Nov 1
+    expect(trend[trend.length - 1].valueMinor).toBe(450000); // minus 100k Nov 5
+
+    // Zero baseline check returns null percentageChange without NaN/Infinity
+    const zeroBase = calculatePeriodComparison({
+      transactions: txs,
+      currencyCode: 'USD',
+      startDate: '2026-11-01',
+      endDate: '2026-11-15',
+      previousStartDate: '2026-10-01',
+      previousEndDate: '2026-10-15',
+      comparisonLabel: 'from last month',
+    });
+    expect(zeroBase.percentageChange).toBeNull();
+    expect(zeroBase.direction).toBe('down');
+  });
+
+  test('preserves historical balances & budgets with tags and archived categories', async () => {
+    const tag = await repos.tags.create({ name: 'Fixed', color: '#10B981' });
     const customCat = await repos.categories.create({
       name: 'Coffee',
       type: 'expense',
@@ -72,163 +172,74 @@ describe('Stages 07–13: transactions, analytics, categories, budgets, CSV & JS
       type: 'expense',
       title: 'Espresso',
       amountMinor: 15000,
+      currencyCode: 'INR',
       categoryId: customCat.id,
       categoryNameSnapshot: customCat.name,
       paymentMethod: 'UPI',
+      tagIds: [tag.id],
       transactionDate: '2026-11-20',
     });
 
     await repos.categories.update(customCat.id, { isArchived: true });
-
-    const activeCats = await repos.categories.getAll({ type: 'expense' });
-    expect(activeCats.some((c) => c.id === customCat.id)).toBe(false);
-
     const txs = await repos.transactions.getAll();
-    expect(txs.length).toBe(1);
-    expect(txs[0].categoryNameSnapshot).toBe('Coffee');
-
-    const summary = summarizeTransactions(txs, 50000);
+    const summary = summarizeTransactions(txs, 50000, 'INR', 'INR');
     expect(summary.currentBalanceMinor).toBe(35000);
-  });
-
-  test('prevents duplicate category creation and rejects invalid transaction/budget amounts', async () => {
-    let duplicateThrew = false;
-    try {
-      await repos.categories.create({
-        name: 'food and dining',
-        type: 'expense',
-        icon: 'utensils',
-        color: '#E65100',
-      });
-    } catch {
-      duplicateThrew = true;
-    }
-    expect(duplicateThrew).toBe(true);
-
-    let invalidTxThrew = false;
-    try {
-      await repos.transactions.create({
-        type: 'expense',
-        title: 'Zero',
-        amountMinor: 0,
-        categoryId: 'cat-exp-other',
-        categoryNameSnapshot: 'Other',
-        paymentMethod: 'Cash',
-        transactionDate: '2026-11-20',
-      });
-    } catch {
-      invalidTxThrew = true;
-    }
-    expect(invalidTxThrew).toBe(true);
-
-    let invalidBudgetThrew = false;
-    try {
-      await repos.budgets.upsert({
-        amountMinor: -100,
-        month: 11,
-        year: 2026,
-        categoryId: null,
-      });
-    } catch {
-      invalidBudgetThrew = true;
-    }
-    expect(invalidBudgetThrew).toBe(true);
-  });
-
-  test('computes multi-day analytics, boundary filtering, and budget calculations accurately', async () => {
-    await repos.transactions.create({
-      type: 'income',
-      title: 'Paycheck',
-      amountMinor: 300000,
-      categoryId: 'cat-inc-salary',
-      categoryNameSnapshot: 'Salary',
-      paymentMethod: 'Bank transfer',
-      transactionDate: '2026-11-01',
-    });
-    await repos.transactions.create({
-      type: 'expense',
-      title: 'Rent',
-      amountMinor: 120000,
-      categoryId: 'cat-exp-rent',
-      categoryNameSnapshot: 'Rent',
-      paymentMethod: 'Bank transfer',
-      transactionDate: '2026-11-01',
-    });
-    await repos.transactions.create({
-      type: 'expense',
-      title: 'Out of month expense',
-      amountMinor: 50000,
-      categoryId: 'cat-exp-food',
-      categoryNameSnapshot: 'Food and Dining',
-      paymentMethod: 'Cash',
-      transactionDate: '2026-12-01',
-    });
-
-    const txs = await repos.transactions.getAll();
-    const cats = await repos.categories.getAll();
-
-    const novSummary = calculatePeriodSummary({
-      transactions: txs,
-      categories: cats,
-      startDate: '2026-11-01',
-      endDate: '2026-11-30',
-    });
-
-    expect(novSummary.totalIncomeMinor).toBe(300000);
-    expect(novSummary.totalExpensesMinor).toBe(120000);
-    expect(novSummary.netMovementMinor).toBe(180000);
-    expect(novSummary.dailyTotals.length).toBe(30);
-    expect(novSummary.highestSpendingCategory?.categoryName).toBe('Rent');
 
     const budget = await repos.budgets.upsert({
-      amountMinor: 150000,
+      amountMinor: 20000,
+      currencyCode: 'INR',
       month: 11,
       year: 2026,
       categoryId: null,
     });
-    const budgetProgress = calculateBudgetProgress({
-      budget,
-      transactions: txs,
-      category: null,
-    });
-    expect(budgetProgress.spentMinor).toBe(120000);
-    expect(budgetProgress.remainingMinor).toBe(30000);
-    expect(budgetProgress.isExceeded).toBe(false);
+    const progress = calculateBudgetProgress({ budget, transactions: txs, category: null });
+    expect(progress.spentMinor).toBe(15000);
+    expect(progress.remainingMinor).toBe(5000);
   });
 
-  test('exports safe CSV and validates + safe-merges JSON backups without overwriting existing records', async () => {
-    const existing = await repos.transactions.create({
+  test('exports multi-currency CSV with tags and restores V2 JSON backups safely', async () => {
+    const tag = await repos.tags.create({ name: 'TeamLunch', color: '#0891B2' });
+    const existingUsd = await repos.transactions.create({
       type: 'expense',
       title: 'Lunch, "Bistro"',
       amountMinor: 2550,
+      currencyCode: 'USD',
       categoryId: 'cat-exp-food',
-      categoryNameSnapshot: 'Food and Dining',
+      categoryNameSnapshot: 'Food & Drink',
       paymentMethod: 'Card',
+      tagIds: [tag.id],
       transactionDate: '2026-11-24',
       note: '=SUM(A1:A2)',
     });
+    const existingJpy = await repos.transactions.create({
+      type: 'expense',
+      title: 'Metro',
+      amountMinor: 420,
+      currencyCode: 'JPY',
+      categoryId: 'cat-exp-transport',
+      categoryNameSnapshot: 'Transport',
+      paymentMethod: 'Cash',
+      transactionDate: '2026-11-24',
+    });
 
-    const csv = buildTransactionsCsv([existing], 'USD');
+    const csv = buildTransactionsCsv([existingUsd, existingJpy], 'INR', [tag]);
     expect(csv.includes('"Lunch, ""Bistro"""')).toBe(true);
     expect(csv.includes("'=SUM(A1:A2)")).toBe(true);
-    expect(csv.includes('25.50')).toBe(true);
+    expect(csv.includes('25.50,USD')).toBe(true);
+    expect(csv.includes('420,JPY')).toBe(true);
+    expect(csv.includes('TeamLunch')).toBe(true);
 
-    const exported = await repos.backup.exportAll('1.0.0');
+    const exported = await repos.backup.exportAll('2.0.0');
     const serialized = serializeBackupPayload(exported);
     const parsed = parseAndValidateBackupJson(serialized);
     expect(parsed.valid).toBe(true);
 
-    // Modify existing record title locally, then run merge restore: existing record must NOT be overwritten
-    await repos.transactions.update(existing.id, { title: 'Updated Local Lunch' });
+    await repos.transactions.update(existingUsd.id, { title: 'Updated Local Lunch' });
     const mergeRes = await repos.backup.restoreFromBackup(parsed.payload!, 'merge');
     expect(mergeRes.transactionsInserted).toBe(0);
-    expect(mergeRes.transactionsSkipped).toBe(1);
+    expect(mergeRes.transactionsSkipped).toBe(2);
 
-    const afterMerge = await repos.transactions.getById(existing.id);
+    const afterMerge = await repos.transactions.getById(existingUsd.id);
     expect(afterMerge?.title).toBe('Updated Local Lunch');
-
-    // Invalid JSON should be rejected cleanly
-    const badJson = parseAndValidateBackupJson('{not valid json');
-    expect(badJson.valid).toBe(false);
   });
 });

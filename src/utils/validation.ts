@@ -1,7 +1,6 @@
-import { PAYMENT_METHODS } from '@/constants/categories';
-import { SUPPORTED_CURRENCIES } from '@/constants/currencies';
+import { isValidIsoCurrencyCode, type CurrencyConfig } from '@/constants/currencies';
 import type { BackupPayload } from '@/types/database';
-import type { PaymentMethod, TransactionType } from '@/types/models';
+import type { TransactionType } from '@/types/models';
 
 import { isValidISODate } from './date';
 import { parseMajorToMinor } from './money';
@@ -15,8 +14,9 @@ export interface ValidationResult<T = void> {
 export function validatePositiveAmountInput(
   rawAmount: string,
   currencyCode: string,
+  catalog?: readonly CurrencyConfig[],
 ): ValidationResult<number> {
-  const minor = parseMajorToMinor(rawAmount, currencyCode);
+  const minor = parseMajorToMinor(rawAmount, currencyCode, catalog);
   if (minor === null || minor <= 0) {
     return {
       valid: false,
@@ -29,11 +29,12 @@ export function validatePositiveAmountInput(
 export function validateNonNegativeAmountInput(
   rawAmount: string,
   currencyCode: string,
+  catalog?: readonly CurrencyConfig[],
 ): ValidationResult<number> {
   if (!rawAmount.trim()) {
     return { valid: true, value: 0 };
   }
-  const minor = parseMajorToMinor(rawAmount, currencyCode);
+  const minor = parseMajorToMinor(rawAmount, currencyCode, catalog);
   if (minor === null || minor < 0) {
     return {
       valid: false,
@@ -50,7 +51,8 @@ export function validateTransactionInput(params: {
   currencyCode: string;
   categoryId: string | null;
   transactionDate: string;
-  paymentMethod: PaymentMethod;
+  paymentMethod: string;
+  catalog?: readonly CurrencyConfig[];
 }): ValidationResult<{ amountMinor: number; title: string }> {
   const trimmedTitle = params.title.trim();
   if (!trimmedTitle) {
@@ -60,7 +62,15 @@ export function validateTransactionInput(params: {
     return { valid: false, error: 'Title must be 100 characters or fewer.' };
   }
 
-  const amountResult = validatePositiveAmountInput(params.rawAmount, params.currencyCode);
+  if (!isValidIsoCurrencyCode(params.currencyCode)) {
+    return { valid: false, error: 'Please select a valid currency.' };
+  }
+
+  const amountResult = validatePositiveAmountInput(
+    params.rawAmount,
+    params.currencyCode,
+    params.catalog,
+  );
   if (!amountResult.valid || amountResult.value === undefined) {
     return { valid: false, error: amountResult.error };
   }
@@ -73,8 +83,8 @@ export function validateTransactionInput(params: {
     return { valid: false, error: 'Please select a valid date.' };
   }
 
-  if (!PAYMENT_METHODS.includes(params.paymentMethod)) {
-    return { valid: false, error: 'Invalid payment method.' };
+  if (!params.paymentMethod || !params.paymentMethod.trim()) {
+    return { valid: false, error: 'Please select a payment method.' };
   }
 
   return {
@@ -97,13 +107,45 @@ export function validateCategoryName(name: string): ValidationResult<string> {
   return { valid: true, value: trimmed };
 }
 
+export function validateTagName(name: string): ValidationResult<string> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return { valid: false, error: 'Tag name is required.' };
+  }
+  if (trimmed.length > 32) {
+    return { valid: false, error: 'Tag name must be 32 characters or fewer.' };
+  }
+  return { valid: true, value: trimmed };
+}
+
+export function validatePaymentMethodName(name: string): ValidationResult<string> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return { valid: false, error: 'Payment method name is required.' };
+  }
+  if (trimmed.length > 32) {
+    return { valid: false, error: 'Payment method name must be 32 characters or fewer.' };
+  }
+  return { valid: true, value: trimmed };
+}
+
+const VALID_THEMES = ['system', 'light', 'dark'] as const;
+const VALID_DATE_FORMATS = ['YYYY-MM-DD', 'DD/MM/YYYY', 'MM/DD/YYYY', 'DD MMM YYYY'] as const;
+
+function isNonEmptyString(val: unknown): val is string {
+  return typeof val === 'string' && val.trim().length > 0;
+}
+
 export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayload> {
   if (!raw || typeof raw !== 'object') {
     return { valid: false, error: 'Backup file is not a valid JSON object.' };
   }
 
   const candidate = raw as Record<string, unknown>;
-  if (typeof candidate.schemaVersion !== 'number' || candidate.schemaVersion < 1) {
+  if (
+    !Number.isInteger(candidate.schemaVersion) ||
+    (candidate.schemaVersion !== 1 && candidate.schemaVersion !== 2)
+  ) {
     return { valid: false, error: 'Unsupported or missing backup schema version.' };
   }
 
@@ -112,9 +154,29 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
   }
 
   const settings = candidate.settings as Record<string, unknown>;
-  const currencyValid = SUPPORTED_CURRENCIES.some((c) => c.code === settings.currencyCode);
-  if (!currencyValid || typeof settings.openingBalanceMinor !== 'number') {
+  const settingsCurrency =
+    typeof settings.currencyCode === 'string' ? settings.currencyCode.trim().toUpperCase() : '';
+  const openingCurrency =
+    typeof settings.openingBalanceCurrencyCode === 'string'
+      ? settings.openingBalanceCurrencyCode.trim().toUpperCase()
+      : settingsCurrency;
+
+  if (
+    !isValidIsoCurrencyCode(settingsCurrency) ||
+    !isValidIsoCurrencyCode(openingCurrency) ||
+    typeof settings.openingBalanceMinor !== 'number' ||
+    !Number.isSafeInteger(settings.openingBalanceMinor) ||
+    settings.openingBalanceMinor < 0
+  ) {
     return { valid: false, error: 'Backup settings contain invalid currency or balance.' };
+  }
+
+  if (
+    !VALID_THEMES.includes(settings.theme as (typeof VALID_THEMES)[number]) ||
+    !VALID_DATE_FORMATS.includes(settings.dateFormat as (typeof VALID_DATE_FORMATS)[number]) ||
+    typeof settings.onboardingCompleted !== 'boolean'
+  ) {
+    return { valid: false, error: 'Backup settings contain invalid preferences.' };
   }
 
   if (
@@ -125,32 +187,98 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
     return { valid: false, error: 'Backup must include categories, budgets, and transactions lists.' };
   }
 
+  if (candidate.tags !== undefined && !Array.isArray(candidate.tags)) {
+    return { valid: false, error: 'Backup tags must be a list.' };
+  }
+
+  if (candidate.paymentMethods !== undefined && !Array.isArray(candidate.paymentMethods)) {
+    return { valid: false, error: 'Backup payment methods must be a list.' };
+  }
+
   for (const cat of candidate.categories) {
+    const rec = cat as Record<string, unknown>;
     if (
       !cat ||
       typeof cat !== 'object' ||
-      typeof (cat as Record<string, unknown>).id !== 'string' ||
-      typeof (cat as Record<string, unknown>).name !== 'string' ||
-      ((cat as Record<string, unknown>).type !== 'income' &&
-        (cat as Record<string, unknown>).type !== 'expense')
+      !isNonEmptyString(rec.id) ||
+      !isNonEmptyString(rec.name) ||
+      (rec.type !== 'income' && rec.type !== 'expense') ||
+      (rec.parentId !== undefined && rec.parentId !== null && !isNonEmptyString(rec.parentId)) ||
+      typeof rec.icon !== 'string' ||
+      typeof rec.color !== 'string' ||
+      typeof rec.isDefault !== 'boolean' ||
+      typeof rec.isArchived !== 'boolean' ||
+      !isNonEmptyString(rec.createdAt) ||
+      !isNonEmptyString(rec.updatedAt)
     ) {
       return { valid: false, error: 'Backup contains an invalid category record.' };
     }
   }
 
+  if (Array.isArray(candidate.tags)) {
+    for (const tag of candidate.tags) {
+      const rec = tag as Record<string, unknown>;
+      if (
+        !tag ||
+        typeof tag !== 'object' ||
+        !isNonEmptyString(rec.id) ||
+        !isNonEmptyString(rec.name) ||
+        typeof rec.color !== 'string' ||
+        !isNonEmptyString(rec.createdAt) ||
+        !isNonEmptyString(rec.updatedAt)
+      ) {
+        return { valid: false, error: 'Backup contains an invalid tag record.' };
+      }
+    }
+  }
+
+  if (Array.isArray(candidate.paymentMethods)) {
+    for (const pm of candidate.paymentMethods) {
+      const rec = pm as Record<string, unknown>;
+      if (
+        !pm ||
+        typeof pm !== 'object' ||
+        !isNonEmptyString(rec.id) ||
+        !isNonEmptyString(rec.name) ||
+        typeof rec.icon !== 'string' ||
+        typeof rec.isBuiltin !== 'boolean' ||
+        typeof rec.isArchived !== 'boolean' ||
+        !isNonEmptyString(rec.createdAt) ||
+        !isNonEmptyString(rec.updatedAt)
+      ) {
+        return { valid: false, error: 'Backup contains an invalid payment method record.' };
+      }
+    }
+  }
+
   for (const tx of candidate.transactions) {
     const rec = tx as Record<string, unknown>;
+    const txCurrency =
+      rec.currencyCode === undefined
+        ? settingsCurrency
+        : typeof rec.currencyCode === 'string'
+          ? rec.currencyCode.trim().toUpperCase()
+          : '';
     if (
       !tx ||
       typeof tx !== 'object' ||
-      typeof rec.id !== 'string' ||
+      !isNonEmptyString(rec.id) ||
       (rec.type !== 'income' && rec.type !== 'expense') ||
-      typeof rec.title !== 'string' ||
+      !isNonEmptyString(rec.title) ||
       typeof rec.amountMinor !== 'number' ||
-      !Number.isInteger(rec.amountMinor) ||
+      !Number.isSafeInteger(rec.amountMinor) ||
       rec.amountMinor <= 0 ||
+      !isValidIsoCurrencyCode(txCurrency) ||
+      (rec.categoryId !== null && !isNonEmptyString(rec.categoryId)) ||
+      typeof rec.categoryNameSnapshot !== 'string' ||
+      !isNonEmptyString(rec.paymentMethod) ||
+      (rec.tagIds !== undefined &&
+        (!Array.isArray(rec.tagIds) || !rec.tagIds.every((id) => isNonEmptyString(id)))) ||
       typeof rec.transactionDate !== 'string' ||
-      !isValidISODate(rec.transactionDate)
+      !isValidISODate(rec.transactionDate) ||
+      (rec.note !== null && rec.note !== undefined && typeof rec.note !== 'string') ||
+      !isNonEmptyString(rec.createdAt) ||
+      !isNonEmptyString(rec.updatedAt)
     ) {
       return { valid: false, error: 'Backup contains an invalid transaction record.' };
     }
@@ -158,15 +286,31 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
 
   for (const b of candidate.budgets) {
     const rec = b as Record<string, unknown>;
+    const budgetCurrency =
+      rec.currencyCode === undefined
+        ? settingsCurrency
+        : typeof rec.currencyCode === 'string'
+          ? rec.currencyCode.trim().toUpperCase()
+          : '';
     if (
       !b ||
       typeof b !== 'object' ||
-      typeof rec.id !== 'string' ||
+      !isNonEmptyString(rec.id) ||
       typeof rec.amountMinor !== 'number' ||
-      !Number.isInteger(rec.amountMinor) ||
+      !Number.isSafeInteger(rec.amountMinor) ||
       rec.amountMinor <= 0 ||
+      !isValidIsoCurrencyCode(budgetCurrency) ||
+      rec.period !== 'monthly' ||
       typeof rec.month !== 'number' ||
-      typeof rec.year !== 'number'
+      !Number.isInteger(rec.month) ||
+      rec.month < 1 ||
+      rec.month > 12 ||
+      typeof rec.year !== 'number' ||
+      !Number.isInteger(rec.year) ||
+      rec.year < 1970 ||
+      (rec.categoryId !== null && !isNonEmptyString(rec.categoryId)) ||
+      !isNonEmptyString(rec.createdAt) ||
+      !isNonEmptyString(rec.updatedAt)
     ) {
       return { valid: false, error: 'Backup contains an invalid budget record.' };
     }

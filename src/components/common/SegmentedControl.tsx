@@ -6,18 +6,22 @@ import { useTheme } from '@/hooks/use-theme';
 export interface SegmentOption<T extends string> {
   label: string;
   value: T;
+  activeColor?: string;
+  activeTextColor?: string;
 }
 
 interface SegmentedControlProps<T extends string> {
   options: readonly SegmentOption<T>[];
   value: T;
   onChange: (value: T) => void;
+  pill?: boolean;
 }
 
 export function SegmentedControl<T extends string>({
   options,
   value,
   onChange,
+  pill = true,
 }: SegmentedControlProps<T>) {
   const theme = useTheme();
 
@@ -25,10 +29,17 @@ export function SegmentedControl<T extends string>({
     <View
       style={[
         styles.container,
-        { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
+        {
+          backgroundColor: theme.surface,
+          borderColor: theme.border,
+          borderRadius: pill ? Radius.full : Radius.md,
+        },
       ]}>
       {options.map((option) => {
         const selected = option.value === value;
+        const activeBg = option.activeColor ?? theme.primary;
+        const activeText = option.activeTextColor ?? '#FFFFFF';
+
         return (
           <Pressable
             key={option.value}
@@ -37,17 +48,19 @@ export function SegmentedControl<T extends string>({
             accessibilityState={{ selected }}
             style={[
               styles.option,
+              {
+                borderRadius: pill ? Radius.full : Radius.sm,
+              },
               selected && {
-                backgroundColor: theme.surface,
-                borderColor: theme.border,
+                backgroundColor: activeBg,
               },
             ]}>
             <Text
               style={[
                 styles.label,
                 {
-                  color: selected ? theme.text : theme.textSecondary,
-                  fontWeight: selected ? '600' : '500',
+                  color: selected ? activeText : theme.textSecondary,
+                  fontWeight: selected ? '700' : '500',
                 },
               ]}
               numberOfLines={1}>
@@ -63,17 +76,13 @@ export function SegmentedControl<T extends string>({
 const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
-    borderRadius: Radius.md,
     borderWidth: 1,
-    padding: 3,
+    padding: 4,
     gap: 4,
   },
   option: {
     flex: 1,
-    minHeight: 36,
-    borderRadius: Radius.sm,
-    borderWidth: 1,
-    borderColor: 'transparent',
+    minHeight: 38,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: Spacing.two,

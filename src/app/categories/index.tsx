@@ -1,6 +1,16 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import {
   AppButton,
@@ -25,26 +35,23 @@ import type { Category, CategoryType } from '@/types/models';
 import { formatMoney } from '@/utils/money';
 import { validateCategoryName } from '@/utils/validation';
 
-const TYPE_OPTIONS: readonly SegmentOption<CategoryType>[] = [
-  { label: 'Expense', value: 'expense' },
-  { label: 'Income', value: 'income' },
-];
-
 export default function CategoriesScreen() {
   const theme = useTheme();
 
-  const settings = useAppStore((s) => s.settings);
+  const currencies = useAppStore((s) => s.currencies);
   const categories = useAppStore((s) => s.categories);
   const transactions = useAppStore((s) => s.transactions);
   const createCategory = useAppStore((s) => s.createCategory);
   const updateCategory = useAppStore((s) => s.updateCategory);
 
   const [selectedType, setSelectedType] = useState<CategoryType>('expense');
+  const [searchQuery, setSearchQuery] = useState('');
   const [showArchived, setShowArchived] = useState(false);
 
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [nameInput, setNameInput] = useState('');
+  const [parentIdInput, setParentIdInput] = useState<string | null>(null);
   const [iconInput, setIconInput] = useState<string>(CATEGORY_ICON_OPTIONS[0]);
   const [colorInput, setColorInput] = useState<string>(CATEGORY_COLOR_OPTIONS[0]);
   const [editorError, setEditorError] = useState<string | null>(null);
@@ -52,28 +59,97 @@ export default function CategoriesScreen() {
 
   const [archiveTarget, setArchiveTarget] = useState<Category | null>(null);
   const [archiving, setArchiving] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const categoryTotals = useMemo(() => {
-    const totals = new Map<string, number>();
+  const typeOptions = useMemo<readonly SegmentOption<CategoryType>[]>(
+    () => [
+      {
+        label: 'Expense',
+        value: 'expense',
+        activeColor: theme.expense,
+        activeTextColor: '#FFFFFF',
+      },
+      {
+        label: 'Income',
+        value: 'income',
+        activeColor: theme.income,
+        activeTextColor: '#FFFFFF',
+      },
+    ],
+    [theme.expense, theme.income],
+  );
+
+  // Store per-currency totals per category so distinct currencies are never combined
+  const categoryStats = useMemo(() => {
+    const stats = new Map<
+      string,
+      { count: number; byCurrency: Map<string, number> }
+    >();
     for (const tx of transactions) {
       if (!tx.categoryId) continue;
-      totals.set(tx.categoryId, (totals.get(tx.categoryId) ?? 0) + tx.amountMinor);
+      const entry = stats.get(tx.categoryId) ?? {
+        count: 0,
+        byCurrency: new Map<string, number>(),
+      };
+      entry.count += 1;
+      entry.byCurrency.set(
+        tx.currencyCode,
+        (entry.byCurrency.get(tx.currencyCode) ?? 0) + tx.amountMinor,
+      );
+      stats.set(tx.categoryId, entry);
     }
-    return totals;
+    return stats;
   }, [transactions]);
 
-  const filteredCategories = useMemo(
+  const parentCandidates = useMemo(
     () =>
       categories.filter(
-        (cat) =>
-          cat.type === selectedType && (showArchived ? true : !cat.isArchived),
+        (c) =>
+          c.type === (editingCategory?.type ?? selectedType) &&
+          !c.isArchived &&
+          c.parentId === null &&
+          c.id !== editingCategory?.id,
       ),
-    [categories, selectedType, showArchived],
+    [categories, editingCategory, selectedType],
+  );
+
+  const orderedCategories = useMemo(() => {
+    const base = categories.filter(
+      (cat) =>
+        cat.type === selectedType && (showArchived ? true : !cat.isArchived),
+    );
+    const term = searchQuery.trim().toLowerCase();
+    if (term) {
+      return base.filter((c) => c.name.toLowerCase().includes(term));
+    }
+
+    const roots = base
+      .filter((c) => !c.parentId)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const list: Category[] = [];
+    for (const root of roots) {
+      list.push(root);
+      const children = base
+        .filter((c) => c.parentId === root.id)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      list.push(...children);
+    }
+    const seen = new Set(list.map((c) => c.id));
+    for (const cat of base) {
+      if (!seen.has(cat.id)) list.push(cat);
+    }
+    return list;
+  }, [categories, selectedType, showArchived, searchQuery]);
+
+  const categoryNameMap = useMemo(
+    () => new Map(categories.map((c) => [c.id, c.name])),
+    [categories],
   );
 
   const openCreateModal = () => {
     setEditingCategory(null);
     setNameInput('');
+    setParentIdInput(null);
     setIconInput(selectedType === 'income' ? 'briefcase' : 'tag');
     setColorInput(CATEGORY_COLOR_OPTIONS[0]);
     setEditorError(null);
@@ -83,6 +159,7 @@ export default function CategoriesScreen() {
   const openEditModal = (cat: Category) => {
     setEditingCategory(cat);
     setNameInput(cat.name);
+    setParentIdInput(cat.parentId);
     setIconInput(cat.icon);
     setColorInput(cat.color);
     setEditorError(null);
@@ -115,6 +192,7 @@ export default function CategoriesScreen() {
       if (editingCategory) {
         await updateCategory(editingCategory.id, {
           name: validation.value,
+          parentId: parentIdInput,
           icon: iconInput,
           color: colorInput,
         });
@@ -122,6 +200,7 @@ export default function CategoriesScreen() {
         await createCategory({
           name: validation.value,
           type: selectedType,
+          parentId: parentIdInput,
           icon: iconInput,
           color: colorInput,
         });
@@ -139,21 +218,25 @@ export default function CategoriesScreen() {
   const handleToggleArchive = async () => {
     if (!archiveTarget || archiving) return;
     setArchiving(true);
+    setActionError(null);
     try {
       await updateCategory(archiveTarget.id, {
         isArchived: !archiveTarget.isArchived,
       });
       setArchiveTarget(null);
+    } catch {
+      setArchiveTarget(null);
+      setActionError('Unable to update category status. Please try again.');
     } finally {
       setArchiving(false);
     }
   };
 
   return (
-    <AppScreen>
+    <AppScreen edges={['top', 'bottom', 'left', 'right']}>
       <AppHeader
         title="Categories"
-        subtitle={`${filteredCategories.length} ${selectedType} categories`}
+        subtitle={`${orderedCategories.length} ${selectedType} categories`}
         showBack
         rightAction={
           <AppButton
@@ -166,14 +249,35 @@ export default function CategoriesScreen() {
       />
 
       <SegmentedControl
-        options={TYPE_OPTIONS}
+        options={typeOptions}
         value={selectedType}
         onChange={setSelectedType}
       />
 
+      {/* Searchable bar for large category sets */}
+      <View
+        style={[
+          styles.searchBar,
+          { backgroundColor: theme.surface, borderColor: theme.border },
+        ]}>
+        <Ionicons name="search" size={18} color={theme.textMuted} />
+        <TextInput
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder="Search categories..."
+          placeholderTextColor={theme.textMuted}
+          style={[styles.searchInput, { color: theme.text }]}
+        />
+        {searchQuery.length > 0 ? (
+          <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
+            <Ionicons name="close-circle" size={18} color={theme.textMuted} />
+          </Pressable>
+        ) : null}
+      </View>
+
       <View style={styles.filterBar}>
         <Text style={[styles.hintText, { color: theme.textSecondary }]}>
-          Archiving hides a category from new forms while preserving historical transactions.
+          Archiving hides a category from new forms while preserving historical names on past transactions.
         </Text>
         <Pressable
           onPress={() => setShowArchived((v) => !v)}
@@ -196,20 +300,32 @@ export default function CategoriesScreen() {
         </Pressable>
       </View>
 
-      {filteredCategories.length === 0 ? (
+      {actionError ? (
+        <Text style={[styles.errorBanner, { color: theme.danger }]}>{actionError}</Text>
+      ) : null}
+
+      {orderedCategories.length === 0 ? (
         <EmptyState
           icon="pricetags-outline"
-          title="No categories"
-          description="Add a custom category to organize your transactions."
+          title="No categories found"
+          description="Try clearing your search or add a new category."
           actionLabel="Add Category"
           onAction={openCreateModal}
         />
       ) : (
         <View style={styles.list}>
-          {filteredCategories.map((cat) => {
-            const totalMinor = categoryTotals.get(cat.id) ?? 0;
+          {orderedCategories.map((cat) => {
+            const stat = categoryStats.get(cat.id);
+            const parentName = cat.parentId ? categoryNameMap.get(cat.parentId) : null;
+            const summaryParts = stat
+              ? Array.from(stat.byCurrency.entries()).map(([code, minor]) =>
+                  formatMoney(minor, code, { catalog: currencies }),
+                )
+              : [];
+            const isSub = Boolean(cat.parentId) && !searchQuery;
+
             return (
-              <AppCard key={cat.id}>
+              <AppCard key={cat.id} style={isSub ? styles.subCard : undefined}>
                 <View style={styles.catRow}>
                   <CategoryIcon icon={cat.icon} color={cat.color} size={40} />
                   <View style={styles.catMeta}>
@@ -230,8 +346,15 @@ export default function CategoriesScreen() {
                         </View>
                       ) : null}
                     </View>
+                    {parentName ? (
+                      <Text style={[styles.parentLabel, { color: theme.primary }]}>
+                        Subcategory of {parentName}
+                      </Text>
+                    ) : null}
                     <Text style={[styles.catTotal, { color: theme.textSecondary }]}>
-                      Total recorded: {formatMoney(totalMinor, settings.currencyCode)}
+                      {summaryParts.length > 0
+                        ? `${stat?.count ?? 0} tx · ${summaryParts.join(' · ')}`
+                        : 'No transactions yet'}
                     </Text>
                   </View>
 
@@ -274,20 +397,26 @@ export default function CategoriesScreen() {
         transparent
         animationType="slide"
         onRequestClose={() => setEditorVisible(false)}>
-        <Pressable
+        <KeyboardAvoidingView
           style={styles.modalBackdrop}
-          onPress={() => setEditorVisible(false)}>
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <Pressable
+            style={styles.backdropDismiss}
+            onPress={() => setEditorVisible(false)}
+          />
+          <View
             style={[
               styles.modalSheet,
               { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-            onPress={(e) => e.stopPropagation()}>
+            ]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>
               {editingCategory ? 'Edit Category' : `New ${selectedType} Category`}
             </Text>
 
-            <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+            <ScrollView
+              style={styles.modalScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}>
               <View style={styles.modalBody}>
                 <AppInput
                   label="Category Name"
@@ -296,10 +425,72 @@ export default function CategoriesScreen() {
                     setNameInput(text);
                     if (editorError) setEditorError(null);
                   }}
-                  placeholder="e.g. Subscriptions, Groceries"
+                  placeholder="e.g. Subscriptions, Coffee"
                   maxLength={40}
                   error={editorError}
                 />
+
+                {parentCandidates.length > 0 ? (
+                  <>
+                    <Text style={[styles.fieldLabel, { color: theme.text }]}>
+                      Parent Category (Optional)
+                    </Text>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.parentChips}>
+                      <Pressable
+                        onPress={() => setParentIdInput(null)}
+                        style={[
+                          styles.parentChip,
+                          {
+                            backgroundColor:
+                              parentIdInput === null
+                                ? theme.primarySoft
+                                : theme.surfaceElevated,
+                            borderColor:
+                              parentIdInput === null ? theme.primary : theme.border,
+                          },
+                        ]}>
+                        <Text
+                          style={[
+                            styles.parentChipText,
+                            {
+                              color:
+                                parentIdInput === null ? theme.primary : theme.text,
+                            },
+                          ]}>
+                          Top-Level
+                        </Text>
+                      </Pressable>
+                      {parentCandidates.map((p) => {
+                        const selected = parentIdInput === p.id;
+                        return (
+                          <Pressable
+                            key={p.id}
+                            onPress={() => setParentIdInput(p.id)}
+                            style={[
+                              styles.parentChip,
+                              {
+                                backgroundColor: selected
+                                  ? theme.primarySoft
+                                  : theme.surfaceElevated,
+                                borderColor: selected ? theme.primary : theme.border,
+                              },
+                            ]}>
+                            <Text
+                              style={[
+                                styles.parentChipText,
+                                { color: selected ? theme.primary : theme.text },
+                              ]}>
+                              {p.name}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  </>
+                ) : null}
 
                 <Text style={[styles.fieldLabel, { color: theme.text }]}>Icon</Text>
                 <View style={styles.optionGrid}>
@@ -366,8 +557,8 @@ export default function CategoriesScreen() {
                 />
               </View>
             </View>
-          </Pressable>
-        </Pressable>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <ConfirmDialog
@@ -389,6 +580,20 @@ export default function CategoriesScreen() {
 }
 
 const styles = StyleSheet.create({
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.three - 2,
+    minHeight: 42,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    paddingVertical: 6,
+  },
   filterBar: {
     gap: Spacing.two,
   },
@@ -410,6 +615,9 @@ const styles = StyleSheet.create({
   list: {
     gap: Spacing.two,
   },
+  subCard: {
+    marginLeft: Spacing.three,
+  },
   catRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -426,6 +634,10 @@ const styles = StyleSheet.create({
   },
   catName: {
     fontSize: 15,
+    fontWeight: '600',
+  },
+  parentLabel: {
+    fontSize: 11,
     fontWeight: '600',
   },
   badge: {
@@ -447,8 +659,11 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'flex-end',
+  },
+  backdropDismiss: {
+    flex: 1,
   },
   modalSheet: {
     borderTopLeftRadius: Radius.xl,
@@ -456,7 +671,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: Spacing.four,
     gap: Spacing.three,
-    maxHeight: '85%',
+    maxHeight: '86%',
   },
   modalTitle: {
     fontSize: 18,
@@ -470,6 +685,19 @@ const styles = StyleSheet.create({
   },
   fieldLabel: {
     fontSize: 13,
+    fontWeight: '600',
+  },
+  parentChips: {
+    gap: Spacing.two,
+  },
+  parentChip: {
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: Spacing.one + 2,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  parentChipText: {
+    fontSize: 12,
     fontWeight: '600',
   },
   optionGrid: {
@@ -493,5 +721,9 @@ const styles = StyleSheet.create({
   },
   flex1: {
     flex: 1,
+  },
+  errorBanner: {
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

@@ -31,7 +31,7 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
     if (conditions.length > 0) {
       sql += ` WHERE ${conditions.join(' AND ')}`;
     }
-    sql += ' ORDER BY is_default DESC, name ASC';
+    sql += ' ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, is_default DESC, name ASC';
 
     const rows = await db.getAllAsync<CategoryRow>(sql, ...params);
     return rows.map(mapCategoryRow);
@@ -46,11 +46,35 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
     return row ? mapCategoryRow(row) : null;
   }
 
+  private async validateParentId(
+    parentId: string | null | undefined,
+    type: CategoryType,
+    selfId?: string,
+  ): Promise<string | null> {
+    if (!parentId) return null;
+    if (selfId && parentId === selfId) {
+      throw new Error('A category cannot be its own parent.');
+    }
+    const parent = await this.getById(parentId);
+    if (!parent) {
+      throw new Error('Selected parent category does not exist.');
+    }
+    if (parent.type !== type) {
+      throw new Error('Subcategory must have the same type as its parent category.');
+    }
+    if (parent.parentId !== null) {
+      throw new Error('Subcategories cannot be nested more than one level.');
+    }
+    return parent.id;
+  }
+
   async create(input: CreateCategoryInput): Promise<Category> {
     const trimmedName = input.name.trim();
     if (!trimmedName) {
       throw new Error('Category name is required.');
     }
+
+    const parentId = await this.validateParentId(input.parentId, input.type);
 
     const db = await this.getDb();
     const existingDuplicate = await db.getFirstAsync<CategoryRow>(
@@ -62,6 +86,7 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
       if (existingDuplicate.is_archived === 1) {
         return this.update(existingDuplicate.id, {
           name: trimmedName,
+          parentId,
           icon: input.icon,
           color: input.color,
           isArchived: false,
@@ -75,11 +100,12 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
 
     await db.runAsync(
       `INSERT INTO categories (
-        id, name, type, icon, color, is_default, is_archived, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        id, name, type, parent_id, icon, color, is_default, is_archived, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       id,
       trimmedName,
       input.type,
+      parentId,
       input.icon,
       input.color,
       input.isDefault ? 1 : 0,
@@ -105,31 +131,38 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
       throw new Error('Category name cannot be empty.');
     }
 
-    const db = await this.getDb();
-    const now = new Date().toISOString();
+    const nextParentId =
+      input.parentId !== undefined
+        ? await this.validateParentId(input.parentId, existing.type, id)
+        : existing.parentId;
 
-    await db.withTransactionAsync(async () => {
-      await db.runAsync(
-        `UPDATE categories
-         SET name = ?, icon = ?, color = ?, is_archived = ?, updated_at = ?
-         WHERE id = ?`,
+    const db = await this.getDb();
+    if (nextName.toLowerCase() !== existing.name.toLowerCase()) {
+      const duplicate = await db.getFirstAsync<Pick<CategoryRow, 'id'>>(
+        'SELECT id FROM categories WHERE LOWER(name) = LOWER(?) AND type = ? AND id != ? LIMIT 1',
         nextName,
-        input.icon ?? existing.icon,
-        input.color ?? existing.color,
-        input.isArchived !== undefined ? (input.isArchived ? 1 : 0) : existing.isArchived ? 1 : 0,
-        now,
+        existing.type,
         id,
       );
-
-      // Keep snapshot aligned when user renames a category if desired, without breaking unlinked rows
-      if (input.name && nextName !== existing.name) {
-        await db.runAsync(
-          'UPDATE transactions SET category_name_snapshot = ? WHERE category_id = ?',
-          nextName,
-          id,
-        );
+      if (duplicate) {
+        throw new Error('A category with this name already exists.');
       }
-    });
+    }
+
+    const now = new Date().toISOString();
+
+    await db.runAsync(
+      `UPDATE categories
+       SET name = ?, parent_id = ?, icon = ?, color = ?, is_archived = ?, updated_at = ?
+       WHERE id = ?`,
+      nextName,
+      nextParentId,
+      input.icon ?? existing.icon,
+      input.color ?? existing.color,
+      input.isArchived !== undefined ? (input.isArchived ? 1 : 0) : existing.isArchived ? 1 : 0,
+      now,
+      id,
+    );
 
     const updated = await this.getById(id);
     if (!updated) {

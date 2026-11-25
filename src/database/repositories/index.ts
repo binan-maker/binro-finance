@@ -9,6 +9,10 @@ export {
   SQLiteBackupRepository,
   SQLiteBudgetRepository,
   SQLiteCategoryRepository,
+  SQLiteCurrencyRepository,
+  SQLiteNotificationRepository,
+  SQLitePaymentMethodRepository,
   SQLiteSettingsRepository,
+  SQLiteTagRepository,
   SQLiteTransactionRepository,
 } from './factory';

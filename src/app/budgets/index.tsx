@@ -1,6 +1,15 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { BudgetProgressCard } from '@/components/budgets/BudgetProgressCard';
 import {
@@ -26,6 +35,7 @@ export default function BudgetsScreen() {
   const theme = useTheme();
 
   const settings = useAppStore((s) => s.settings);
+  const currencies = useAppStore((s) => s.currencies);
   const categories = useAppStore((s) => s.categories);
   const transactions = useAppStore((s) => s.transactions);
   const budgets = useAppStore((s) => s.budgets);
@@ -38,6 +48,7 @@ export default function BudgetsScreen() {
 
   const [modalVisible, setModalVisible] = useState(false);
   const [editingScope, setEditingScope] = useState<'overall' | 'category'>('overall');
+  const [editingBudget, setEditingBudget] = useState<Budget | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [amountInput, setAmountInput] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
@@ -45,8 +56,10 @@ export default function BudgetsScreen() {
 
   const [deleteTarget, setDeleteTarget] = useState<Budget | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const currency = getCurrencyConfig(settings.currencyCode);
+  const activeCurrencyCode = settings.currencyCode;
+  const currency = getCurrencyConfig(activeCurrencyCode, currencies);
   const categoryMap = useMemo(
     () => new Map(categories.map((c) => [c.id, c])),
     [categories],
@@ -57,8 +70,14 @@ export default function BudgetsScreen() {
   );
 
   const monthBudgets = useMemo(
-    () => budgets.filter((b) => b.year === year && b.month === month),
-    [budgets, year, month],
+    () =>
+      budgets.filter(
+        (b) =>
+          b.year === year &&
+          b.month === month &&
+          b.currencyCode.toUpperCase() === activeCurrencyCode.toUpperCase(),
+      ),
+    [budgets, year, month, activeCurrencyCode],
   );
 
   const overallBudget = monthBudgets.find((b) => b.categoryId === null) ?? null;
@@ -108,10 +127,11 @@ export default function BudgetsScreen() {
 
   const openOverallModal = () => {
     setEditingScope('overall');
+    setEditingBudget(overallBudget);
     setSelectedCategoryId(null);
     setAmountInput(
       overallBudget
-        ? formatMinorToMajorInput(overallBudget.amountMinor, settings.currencyCode)
+        ? formatMinorToMajorInput(overallBudget.amountMinor, activeCurrencyCode, currencies)
         : '',
     );
     setFormError(null);
@@ -120,10 +140,11 @@ export default function BudgetsScreen() {
 
   const openCategoryBudgetModal = (existingBudget?: Budget) => {
     setEditingScope('category');
+    setEditingBudget(existingBudget ?? null);
     if (existingBudget && existingBudget.categoryId) {
       setSelectedCategoryId(existingBudget.categoryId);
       setAmountInput(
-        formatMinorToMajorInput(existingBudget.amountMinor, settings.currencyCode),
+        formatMinorToMajorInput(existingBudget.amountMinor, activeCurrencyCode, currencies),
       );
     } else {
       setSelectedCategoryId(availableCategoriesForNewBudget[0]?.id ?? null);
@@ -139,7 +160,8 @@ export default function BudgetsScreen() {
 
     const validation = validatePositiveAmountInput(
       amountInput,
-      settings.currencyCode,
+      activeCurrencyCode,
+      currencies,
     );
     if (!validation.valid || validation.value === undefined) {
       setFormError(validation.error ?? 'Enter a valid budget amount.');
@@ -155,6 +177,7 @@ export default function BudgetsScreen() {
     try {
       await upsertBudget({
         amountMinor: validation.value,
+        currencyCode: activeCurrencyCode,
         month,
         year,
         categoryId: editingScope === 'overall' ? null : selectedCategoryId,
@@ -172,21 +195,29 @@ export default function BudgetsScreen() {
   const handleDeleteBudget = async () => {
     if (!deleteTarget || deleting) return;
     setDeleting(true);
+    setActionError(null);
     try {
       await deleteBudget(deleteTarget.id);
       setDeleteTarget(null);
+    } catch {
+      setDeleteTarget(null);
+      setActionError('Unable to delete budget. Please try again.');
     } finally {
       setDeleting(false);
     }
   };
 
   return (
-    <AppScreen>
+    <AppScreen edges={['top', 'bottom', 'left', 'right']}>
       <AppHeader
         title="Budgets"
-        subtitle="Monthly spending limits"
+        subtitle={`Monthly spending limits (${activeCurrencyCode})`}
         showBack
       />
+
+      {actionError ? (
+        <Text style={[styles.errorBanner, { color: theme.danger }]}>{actionError}</Text>
+      ) : null}
 
       <AppCard>
         <View style={styles.monthRow}>
@@ -214,7 +245,8 @@ export default function BudgetsScreen() {
       {overallProgress ? (
         <BudgetProgressCard
           progress={overallProgress}
-          currencyCode={settings.currencyCode}
+          currencyCode={activeCurrencyCode}
+          currencies={currencies}
           onEdit={openOverallModal}
           onDelete={() => setDeleteTarget(overallProgress.budget)}
         />
@@ -222,7 +254,7 @@ export default function BudgetsScreen() {
         <EmptyState
           icon="pie-chart-outline"
           title="No overall monthly budget"
-          description={`Set an overall spending limit for ${getMonthLabel(year, month)} without affecting existing transactions.`}
+          description={`Set an overall spending limit for ${getMonthLabel(year, month)} (${activeCurrencyCode}) without affecting existing transactions.`}
           actionLabel="Set Overall Budget"
           onAction={openOverallModal}
         />
@@ -246,7 +278,7 @@ export default function BudgetsScreen() {
         <EmptyState
           icon="pricetags-outline"
           title="No category budgets"
-          description="Optionally set spending caps for specific expense categories such as Food or Shopping."
+          description="Optionally set spending caps for specific expense categories such as Food & Drink or Shopping."
           actionLabel={
             availableCategoriesForNewBudget.length > 0
               ? 'Add Category Budget'
@@ -264,7 +296,8 @@ export default function BudgetsScreen() {
             <BudgetProgressCard
               key={prog.budget.id}
               progress={prog}
-              currencyCode={settings.currencyCode}
+              currencyCode={activeCurrencyCode}
+              currencies={currencies}
               onEdit={() => openCategoryBudgetModal(prog.budget)}
               onDelete={() => setDeleteTarget(prog.budget)}
             />
@@ -278,15 +311,15 @@ export default function BudgetsScreen() {
         transparent
         animationType="slide"
         onRequestClose={() => setModalVisible(false)}>
-        <Pressable
+        <KeyboardAvoidingView
           style={styles.modalBackdrop}
-          onPress={() => setModalVisible(false)}>
-          <Pressable
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <Pressable style={styles.backdropDismiss} onPress={() => setModalVisible(false)} />
+          <View
             style={[
               styles.modalSheet,
               { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-            onPress={(e) => e.stopPropagation()}>
+            ]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>
               {editingScope === 'overall'
                 ? `Overall Budget (${getMonthLabel(year, month)})`
@@ -294,45 +327,54 @@ export default function BudgetsScreen() {
             </Text>
 
             {editingScope === 'category' ? (
-              <ScrollView style={styles.catScroll} showsVerticalScrollIndicator={false}>
-                <View style={styles.catChips}>
-                  {expenseCategories.map((cat) => {
-                    const isCurrentEdit = selectedCategoryId === cat.id;
-                    const alreadyHasBudget = categoryBudgets.some(
-                      (b) => b.categoryId === cat.id,
-                    );
-                    const disabled = alreadyHasBudget && !isCurrentEdit;
-                    return (
-                      <Pressable
-                        key={cat.id}
-                        disabled={disabled}
-                        onPress={() => setSelectedCategoryId(cat.id)}
-                        style={[
-                          styles.catChip,
-                          {
-                            backgroundColor: isCurrentEdit
-                              ? theme.primarySoft
-                              : theme.surfaceElevated,
-                            borderColor: isCurrentEdit ? theme.primary : theme.border,
-                            opacity: disabled ? 0.45 : 1,
-                          },
-                        ]}>
-                        <Text
+              editingBudget && selectedCategoryId ? (
+                <Text style={[styles.editingCategoryLabel, { color: theme.textSecondary }]}>
+                  Category: {categoryMap.get(selectedCategoryId)?.name ?? 'Selected Category'}
+                </Text>
+              ) : (
+                <ScrollView
+                  style={styles.catScroll}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}>
+                  <View style={styles.catChips}>
+                    {expenseCategories.map((cat) => {
+                      const isCurrentEdit = selectedCategoryId === cat.id;
+                      const alreadyHasBudget = categoryBudgets.some(
+                        (b) => b.categoryId === cat.id,
+                      );
+                      const disabled = alreadyHasBudget && !isCurrentEdit;
+                      return (
+                        <Pressable
+                          key={cat.id}
+                          disabled={disabled}
+                          onPress={() => setSelectedCategoryId(cat.id)}
                           style={[
-                            styles.catChipText,
-                            { color: isCurrentEdit ? theme.primary : theme.text },
+                            styles.catChip,
+                            {
+                              backgroundColor: isCurrentEdit
+                                ? theme.primarySoft
+                                : theme.surfaceElevated,
+                              borderColor: isCurrentEdit ? theme.primary : theme.border,
+                              opacity: disabled ? 0.45 : 1,
+                            },
                           ]}>
-                          {cat.name}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </ScrollView>
+                          <Text
+                            style={[
+                              styles.catChipText,
+                              { color: isCurrentEdit ? theme.primary : theme.text },
+                            ]}>
+                            {cat.name}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              )
             ) : null}
 
             <AppInput
-              label="Monthly Limit"
+              label={`Monthly Limit (${activeCurrencyCode})`}
               prefix={currency.symbol}
               value={amountInput}
               onChangeText={(text) => {
@@ -363,8 +405,8 @@ export default function BudgetsScreen() {
                 />
               </View>
             </View>
-          </Pressable>
-        </Pressable>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <ConfirmDialog
@@ -414,13 +456,18 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'flex-end',
+  },
+  backdropDismiss: {
+    flex: 1,
   },
   modalSheet: {
     borderTopLeftRadius: Radius.xl,
     borderTopRightRadius: Radius.xl,
-    borderWidth: 1,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
     padding: Spacing.four,
     gap: Spacing.three,
     maxHeight: '80%',
@@ -453,5 +500,13 @@ const styles = StyleSheet.create({
   },
   flex1: {
     flex: 1,
+  },
+  errorBanner: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  editingCategoryLabel: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

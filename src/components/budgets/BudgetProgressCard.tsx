@@ -1,7 +1,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppCard } from '@/components/common';
+import type { CurrencyConfig } from '@/constants/currencies';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { BudgetProgress } from '@/types/reports';
@@ -10,6 +12,7 @@ import { formatMoney } from '@/utils/money';
 interface BudgetProgressCardProps {
   progress: BudgetProgress;
   currencyCode: string;
+  currencies?: readonly CurrencyConfig[];
   onEdit?: () => void;
   onDelete?: () => void;
 }
@@ -17,10 +20,13 @@ interface BudgetProgressCardProps {
 export function BudgetProgressCard({
   progress,
   currencyCode,
+  currencies,
   onEdit,
   onDelete,
 }: BudgetProgressCardProps) {
   const theme = useTheme();
+  const [menuOpen, setMenuOpen] = useState(false);
+
   const title = progress.categoryName ?? 'Monthly Overall Budget';
   const clampedRatio = Math.min(Math.max(progress.percentageUsed / 100, 0), 1);
 
@@ -29,6 +35,8 @@ export function BudgetProgressCard({
     : progress.percentageUsed >= 85
       ? theme.warning
       : progress.categoryColor || theme.primary;
+
+  const hasActions = Boolean(onEdit || onDelete);
 
   return (
     <AppCard>
@@ -44,33 +52,23 @@ export function BudgetProgressCard({
           </Text>
         </View>
 
-        <View style={styles.actions}>
-          {onEdit ? (
-            <Pressable
-              onPress={onEdit}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={`Edit ${title}`}>
-              <Ionicons name="create-outline" size={18} color={theme.primary} />
-            </Pressable>
-          ) : null}
-          {onDelete ? (
-            <Pressable
-              onPress={onDelete}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={`Delete ${title}`}>
-              <Ionicons name="trash-outline" size={18} color={theme.textMuted} />
-            </Pressable>
-          ) : null}
-        </View>
+        {hasActions ? (
+          <Pressable
+            onPress={() => setMenuOpen(true)}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={`Actions for ${title}`}
+            style={styles.menuBtn}>
+            <Ionicons name="ellipsis-horizontal" size={18} color={theme.textSecondary} />
+          </Pressable>
+        ) : null}
       </View>
 
       <View style={styles.amountsRow}>
         <Text style={[styles.spentText, { color: theme.text }]}>
-          {formatMoney(progress.spentMinor, currencyCode)}{' '}
+          {formatMoney(progress.spentMinor, currencyCode, { catalog: currencies })}{' '}
           <Text style={[styles.limitText, { color: theme.textSecondary }]}>
-            / {formatMoney(progress.budget.amountMinor, currencyCode)}
+            / {formatMoney(progress.budget.amountMinor, currencyCode, { catalog: currencies })}
           </Text>
         </Text>
         <Text
@@ -101,8 +99,8 @@ export function BudgetProgressCard({
             { color: progress.isExceeded ? theme.danger : theme.textSecondary },
           ]}>
           {progress.isExceeded
-            ? `Exceeded by ${formatMoney(Math.abs(progress.remainingMinor), currencyCode)}`
-            : `${formatMoney(progress.remainingMinor, currencyCode)} remaining`}
+            ? `Exceeded by ${formatMoney(Math.abs(progress.remainingMinor), currencyCode, { catalog: currencies })}`
+            : `${formatMoney(progress.remainingMinor, currencyCode, { catalog: currencies })} remaining`}
         </Text>
         {progress.isExceeded ? (
           <View style={[styles.warnBadge, { backgroundColor: theme.dangerSoft }]}>
@@ -112,6 +110,54 @@ export function BudgetProgressCard({
           </View>
         ) : null}
       </View>
+
+      {hasActions ? (
+        <Modal
+          visible={menuOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setMenuOpen(false)}>
+          <Pressable
+            style={styles.menuBackdrop}
+            onPress={() => setMenuOpen(false)}>
+            <View
+              style={[
+                styles.menuCard,
+                { backgroundColor: theme.surface, borderColor: theme.border },
+              ]}>
+              {onEdit ? (
+                <Pressable
+                  onPress={() => {
+                    setMenuOpen(false);
+                    onEdit();
+                  }}
+                  style={styles.menuItem}>
+                  <Ionicons name="create-outline" size={18} color={theme.text} />
+                  <Text style={[styles.menuItemText, { color: theme.text }]}>
+                    Edit Budget
+                  </Text>
+                </Pressable>
+              ) : null}
+              {onEdit && onDelete ? (
+                <View style={[styles.menuDivider, { backgroundColor: theme.border }]} />
+              ) : null}
+              {onDelete ? (
+                <Pressable
+                  onPress={() => {
+                    setMenuOpen(false);
+                    onDelete();
+                  }}
+                  style={styles.menuItem}>
+                  <Ionicons name="close-circle-outline" size={18} color={theme.danger} />
+                  <Text style={[styles.menuItemText, { color: theme.danger }]}>
+                    Delete Budget
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </Pressable>
+        </Modal>
+      ) : null}
     </AppCard>
   );
 }
@@ -139,10 +185,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     flex: 1,
   },
-  actions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.three - 4,
+  menuBtn: {
+    padding: 4,
   },
   amountsRow: {
     flexDirection: 'row',
@@ -187,5 +231,33 @@ const styles = StyleSheet.create({
   warnBadgeText: {
     fontSize: 11,
     fontWeight: '700',
+  },
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.four,
+  },
+  menuCard: {
+    width: '100%',
+    maxWidth: 280,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two + 2,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.three,
+  },
+  menuItemText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  menuDivider: {
+    height: 1,
   },
 });

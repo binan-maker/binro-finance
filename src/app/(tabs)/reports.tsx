@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import {
   AppButton,
@@ -20,7 +20,10 @@ import {
 } from '@/components/reports/Charts';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { calculatePeriodSummary } from '@/services/calculations/financialCalculations';
+import {
+  calculatePeriodSummary,
+  getDistinctTransactionCurrencies,
+} from '@/services/calculations/financialCalculations';
 import { useAppStore } from '@/store/app-store';
 import type { ReportPeriod } from '@/types/reports';
 import {
@@ -49,6 +52,7 @@ export default function ReportsScreen() {
 
   const settings = useAppStore((s) => s.settings);
   const categories = useAppStore((s) => s.categories);
+  const currencies = useAppStore((s) => s.currencies);
   const transactions = useAppStore((s) => s.transactions);
 
   const today = getTodayISODate();
@@ -56,6 +60,22 @@ export default function ReportsScreen() {
   const [anchorDate, setAnchorDate] = useState(today);
   const [customStart, setCustomStart] = useState(addDaysToISODate(today, -29));
   const [customEnd, setCustomEnd] = useState(today);
+  const [selectedCurrency, setSelectedCurrency] = useState<string | null>(null);
+
+  const availableCurrencies = useMemo(
+    () =>
+      getDistinctTransactionCurrencies(
+        transactions,
+        settings.currencyCode,
+        settings.openingBalanceCurrencyCode,
+      ),
+    [transactions, settings.currencyCode, settings.openingBalanceCurrencyCode],
+  );
+
+  const activeCurrencyCode =
+    selectedCurrency && availableCurrencies.includes(selectedCurrency)
+      ? selectedCurrency
+      : settings.currencyCode;
 
   const { startDate, endDate, rangeTitle } = useMemo(() => {
     const parts = parseISODateParts(anchorDate);
@@ -116,7 +136,9 @@ export default function ReportsScreen() {
         nextMonth = 1;
         nextYear += 1;
       }
-      setAnchorDate(`${String(nextYear).padStart(4, '0')}-${String(nextMonth).padStart(2, '0')}-01`);
+      setAnchorDate(
+        `${String(nextYear).padStart(4, '0')}-${String(nextMonth).padStart(2, '0')}-01`,
+      );
     } else if (period === 'yearly') {
       const nextYear = parts.year + delta;
       setAnchorDate(`${String(nextYear).padStart(4, '0')}-01-01`);
@@ -128,17 +150,18 @@ export default function ReportsScreen() {
       calculatePeriodSummary({
         transactions,
         categories,
+        currencyCode: activeCurrencyCode,
         startDate,
         endDate,
       }),
-    [transactions, categories, startDate, endDate],
+    [transactions, categories, activeCurrencyCode, startDate, endDate],
   );
 
   return (
     <AppScreen>
       <AppHeader
         title="Reports"
-        subtitle="Analytics from stored transactions"
+        subtitle={`Analytics (${activeCurrencyCode})`}
         rightAction={
           <AppButton
             label="Calendar"
@@ -148,6 +171,37 @@ export default function ReportsScreen() {
           />
         }
       />
+
+      {availableCurrencies.length > 1 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.currencyTabs}>
+          {availableCurrencies.map((code) => {
+            const selected = code === activeCurrencyCode;
+            return (
+              <Pressable
+                key={code}
+                onPress={() => setSelectedCurrency(code)}
+                style={[
+                  styles.currencyTab,
+                  {
+                    backgroundColor: selected ? theme.primarySoft : theme.surface,
+                    borderColor: selected ? theme.primary : theme.border,
+                  },
+                ]}>
+                <Text
+                  style={[
+                    styles.currencyTabText,
+                    { color: selected ? theme.primary : theme.textSecondary },
+                  ]}>
+                  {code}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      ) : null}
 
       <SegmentedControl
         options={PERIOD_OPTIONS}
@@ -201,8 +255,8 @@ export default function ReportsScreen() {
       {summary.transactionCount === 0 ? (
         <EmptyState
           icon="bar-chart-outline"
-          title="No transactions in this period"
-          description="Try another date range or record a transaction to view income, expenses, and spending trends."
+          title={`No ${activeCurrencyCode} transactions in this period`}
+          description="Try switching currency, choosing another date range, or recording a transaction."
           actionLabel="Add Transaction"
           onAction={() => router.push('/transactions/add')}
         />
@@ -214,16 +268,26 @@ export default function ReportsScreen() {
                 <Text style={[styles.kpiLabel, { color: theme.income }]}>
                   Total Income
                 </Text>
-                <Text style={[styles.kpiValue, { color: theme.income }]}>
-                  {formatMoney(summary.totalIncomeMinor, settings.currencyCode)}
+                <Text
+                  style={[styles.kpiValue, { color: theme.income }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit>
+                  {formatMoney(summary.totalIncomeMinor, activeCurrencyCode, {
+                    catalog: currencies,
+                  })}
                 </Text>
               </View>
               <View style={[styles.kpiTile, { backgroundColor: theme.expenseSoft }]}>
                 <Text style={[styles.kpiLabel, { color: theme.expense }]}>
                   Total Expenses
                 </Text>
-                <Text style={[styles.kpiValue, { color: theme.expense }]}>
-                  {formatMoney(summary.totalExpensesMinor, settings.currencyCode)}
+                <Text
+                  style={[styles.kpiValue, { color: theme.expense }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit>
+                  {formatMoney(summary.totalExpensesMinor, activeCurrencyCode, {
+                    catalog: currencies,
+                  })}
                 </Text>
               </View>
             </View>
@@ -231,8 +295,9 @@ export default function ReportsScreen() {
             <View style={styles.metricsList}>
               <MetricRow
                 label="Net Financial Movement"
-                value={formatMoney(summary.netMovementMinor, settings.currencyCode, {
+                value={formatMoney(summary.netMovementMinor, activeCurrencyCode, {
                   showSign: true,
+                  catalog: currencies,
                 })}
                 valueColor={
                   summary.netMovementMinor >= 0 ? theme.income : theme.expense
@@ -243,7 +308,8 @@ export default function ReportsScreen() {
                 label="Average Daily Expenses"
                 value={formatMoney(
                   summary.averageDailyExpenseMinor,
-                  settings.currencyCode,
+                  activeCurrencyCode,
+                  { catalog: currencies },
                 )}
               />
               <View style={[styles.divider, { backgroundColor: theme.border }]} />
@@ -251,7 +317,7 @@ export default function ReportsScreen() {
                 label="Highest Spending Category"
                 value={
                   summary.highestSpendingCategory
-                    ? `${summary.highestSpendingCategory.categoryName} (${formatMoney(summary.highestSpendingCategory.totalMinor, settings.currencyCode)})`
+                    ? `${summary.highestSpendingCategory.categoryName} (${formatMoney(summary.highestSpendingCategory.totalMinor, activeCurrencyCode, { catalog: currencies })})`
                     : 'None'
                 }
               />
@@ -260,7 +326,7 @@ export default function ReportsScreen() {
                 label="Highest Spending Day"
                 value={
                   summary.highestSpendingDay
-                    ? `${formatDateForDisplay(summary.highestSpendingDay.date, settings.dateFormat)} (${formatMoney(summary.highestSpendingDay.amountMinor, settings.currencyCode)})`
+                    ? `${formatDateForDisplay(summary.highestSpendingDay.date, settings.dateFormat)} (${formatMoney(summary.highestSpendingDay.amountMinor, activeCurrencyCode, { catalog: currencies })})`
                     : 'None'
                 }
               />
@@ -274,7 +340,8 @@ export default function ReportsScreen() {
             <IncomeExpenseBarChart
               incomeMinor={summary.totalIncomeMinor}
               expenseMinor={summary.totalExpensesMinor}
-              currencyCode={settings.currencyCode}
+              currencyCode={activeCurrencyCode}
+              catalog={currencies}
             />
           </AppCard>
 
@@ -284,7 +351,8 @@ export default function ReportsScreen() {
             </Text>
             <DailySpendingTrendChart
               dailyTotals={summary.dailyTotals}
-              currencyCode={settings.currencyCode}
+              currencyCode={activeCurrencyCode}
+              catalog={currencies}
             />
           </AppCard>
 
@@ -295,7 +363,8 @@ export default function ReportsScreen() {
             <CategoryDonutChart
               items={summary.categoryBreakdown}
               totalMinor={summary.totalExpensesMinor}
-              currencyCode={settings.currencyCode}
+              currencyCode={activeCurrencyCode}
+              catalog={currencies}
               maxLegendItems={12}
             />
           </AppCard>
@@ -330,6 +399,20 @@ function MetricRow({
 }
 
 const styles = StyleSheet.create({
+  currencyTabs: {
+    gap: Spacing.two,
+    paddingVertical: 2,
+  },
+  currencyTab: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  currencyTabText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
   customRangeRow: {
     flexDirection: 'row',
     gap: Spacing.two,

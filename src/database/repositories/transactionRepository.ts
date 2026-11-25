@@ -1,9 +1,11 @@
+import { DEFAULT_CURRENCY_CODE, isValidIsoCurrencyCode } from '@/constants/currencies';
 import type { SqlBindValue, SqlDatabaseAdapter } from '@/database/driver';
 import type {
   CreateTransactionInput,
   ITransactionRepository,
   TransactionFilters,
   TransactionRow,
+  TransactionTagRow,
   UpdateTransactionInput,
 } from '@/types/database';
 import type { Transaction } from '@/types/models';
@@ -14,8 +16,57 @@ import { mapTransactionRow } from './mappers';
 export class SQLiteTransactionRepository implements ITransactionRepository {
   constructor(private readonly getDb: () => Promise<SqlDatabaseAdapter>) {}
 
+  private async getFallbackCurrency(db: SqlDatabaseAdapter): Promise<string> {
+    const row = await db.getFirstAsync<{ currency_code: string }>(
+      'SELECT currency_code FROM app_settings WHERE id = 1 LIMIT 1',
+    );
+    return row?.currency_code?.trim().toUpperCase() || DEFAULT_CURRENCY_CODE;
+  }
+
+  private async attachTags(
+    db: SqlDatabaseAdapter,
+    rows: TransactionRow[],
+    fallbackCurrency: string,
+  ): Promise<Transaction[]> {
+    if (rows.length === 0) return [];
+
+    const placeholders = rows.map(() => '?').join(', ');
+    const tagRows = await db.getAllAsync<TransactionTagRow>(
+      `SELECT transaction_id, tag_id FROM transaction_tags WHERE transaction_id IN (${placeholders})`,
+      ...rows.map((r) => r.id),
+    );
+
+    const tagsByTx = new Map<string, string[]>();
+    for (const row of tagRows) {
+      const existing = tagsByTx.get(row.transaction_id) ?? [];
+      existing.push(row.tag_id);
+      tagsByTx.set(row.transaction_id, existing);
+    }
+
+    return rows.map((row) =>
+      mapTransactionRow(row, fallbackCurrency, tagsByTx.get(row.id) ?? []),
+    );
+  }
+
+  private async replaceTransactionTags(
+    db: SqlDatabaseAdapter,
+    transactionId: string,
+    tagIds: readonly string[],
+  ): Promise<void> {
+    await db.runAsync('DELETE FROM transaction_tags WHERE transaction_id = ?', transactionId);
+    const uniqueTagIds = Array.from(new Set(tagIds.filter((id) => Boolean(id))));
+    for (const tagId of uniqueTagIds) {
+      await db.runAsync(
+        'INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)',
+        transactionId,
+        tagId,
+      );
+    }
+  }
+
   async getAll(filters?: TransactionFilters): Promise<Transaction[]> {
     const db = await this.getDb();
+    const fallbackCurrency = await this.getFallbackCurrency(db);
     const conditions: string[] = [];
     const params: SqlBindValue[] = [];
 
@@ -29,8 +80,31 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
       params.push(filters.categoryId);
     }
 
-    if (filters?.paymentMethod && filters.paymentMethod !== 'all') {
-      conditions.push('payment_method = ?');
+    if (filters?.tagId) {
+      conditions.push(
+        'EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = transactions.id AND tt.tag_id = ?)',
+      );
+      params.push(filters.tagId);
+    }
+
+    if (filters?.tagIds && filters.tagIds.length > 0) {
+      const placeholders = filters.tagIds.map(() => '?').join(', ');
+      conditions.push(
+        `EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = transactions.id AND tt.tag_id IN (${placeholders}))`,
+      );
+      params.push(...filters.tagIds);
+    }
+
+    if (filters?.currencyCode) {
+      conditions.push('UPPER(COALESCE(currency_code, ?)) = UPPER(?)');
+      params.push(fallbackCurrency, filters.currencyCode);
+    }
+
+    if (filters?.paymentMethodId) {
+      conditions.push('payment_method_id = ?');
+      params.push(filters.paymentMethodId);
+    } else if (filters?.paymentMethod && filters.paymentMethod !== 'all') {
+      conditions.push('LOWER(COALESCE(payment_method, \'\')) = LOWER(?)');
       params.push(filters.paymentMethod);
     }
 
@@ -47,9 +121,18 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
     if (filters?.search && filters.search.trim().length > 0) {
       const term = `%${filters.search.trim().toLowerCase()}%`;
       conditions.push(
-        "(LOWER(title) LIKE ? OR LOWER(COALESCE(note, '')) LIKE ? OR LOWER(COALESCE(category_name_snapshot, '')) LIKE ?)",
+        `(LOWER(title) LIKE ?
+          OR LOWER(COALESCE(note, '')) LIKE ?
+          OR LOWER(COALESCE(category_name_snapshot, '')) LIKE ?
+          OR LOWER(COALESCE(payment_method, '')) LIKE ?
+          OR LOWER(COALESCE(currency_code, '')) LIKE ?
+          OR EXISTS (
+            SELECT 1 FROM transaction_tags tt
+            INNER JOIN tags tg ON tg.id = tt.tag_id
+            WHERE tt.transaction_id = transactions.id AND LOWER(tg.name) LIKE ?
+          ))`,
       );
-      params.push(term, term, term);
+      params.push(term, term, term, term, term, term);
     }
 
     let sql = 'SELECT * FROM transactions';
@@ -68,7 +151,7 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
     }
 
     const rows = await db.getAllAsync<TransactionRow>(sql, ...params);
-    return rows.map(mapTransactionRow);
+    return this.attachTags(db, rows, fallbackCurrency);
   }
 
   async getById(id: string): Promise<Transaction | null> {
@@ -77,7 +160,10 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
       'SELECT * FROM transactions WHERE id = ? LIMIT 1',
       id,
     );
-    return row ? mapTransactionRow(row) : null;
+    if (!row) return null;
+    const fallbackCurrency = await this.getFallbackCurrency(db);
+    const [tx] = await this.attachTags(db, [row], fallbackCurrency);
+    return tx ?? null;
   }
 
   async getByDate(date: string): Promise<Transaction[]> {
@@ -89,31 +175,50 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
   }
 
   async create(input: CreateTransactionInput): Promise<Transaction> {
-    if (!Number.isInteger(input.amountMinor) || input.amountMinor <= 0) {
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
       throw new Error('Transaction amount must be a positive integer in minor units.');
+    }
+    const trimmedTitle = input.title.trim();
+    if (!trimmedTitle) {
+      throw new Error('Transaction title is required.');
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.transactionDate)) {
+      throw new Error('Transaction date must be in YYYY-MM-DD format.');
+    }
+    const normalizedCurrency = input.currencyCode.trim().toUpperCase();
+    if (!isValidIsoCurrencyCode(normalizedCurrency)) {
+      throw new Error('Transaction currency code must be a valid 3-letter ISO code.');
     }
 
     const db = await this.getDb();
     const id = input.id ?? generateUUID();
     const now = new Date().toISOString();
 
-    await db.runAsync(
-      `INSERT INTO transactions (
-        id, type, title, amount_minor, category_id, category_name_snapshot,
-        payment_method, transaction_date, note, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id,
-      input.type,
-      input.title.trim(),
-      input.amountMinor,
-      input.categoryId,
-      input.categoryNameSnapshot,
-      input.paymentMethod,
-      input.transactionDate,
-      input.note?.trim() || null,
-      now,
-      now,
-    );
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO transactions (
+          id, type, title, amount_minor, currency_code, category_id, category_name_snapshot,
+          payment_method_id, payment_method, transaction_date, note, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id,
+        input.type,
+        trimmedTitle,
+        input.amountMinor,
+        normalizedCurrency,
+        input.categoryId,
+        input.categoryNameSnapshot,
+        input.paymentMethodId ?? null,
+        input.paymentMethod.trim() || 'Cash',
+        input.transactionDate,
+        input.note?.trim() || null,
+        now,
+        now,
+      );
+
+      if (input.tagIds && input.tagIds.length > 0) {
+        await this.replaceTransactionTags(db, id, input.tagIds);
+      }
+    });
 
     const created = await this.getById(id);
     if (!created) {
@@ -129,36 +234,58 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
     }
 
     const nextAmount = input.amountMinor ?? existing.amountMinor;
-    if (!Number.isInteger(nextAmount) || nextAmount <= 0) {
+    if (!Number.isSafeInteger(nextAmount) || nextAmount <= 0) {
       throw new Error('Transaction amount must be a positive integer in minor units.');
+    }
+    const nextTitle = (input.title ?? existing.title).trim();
+    if (!nextTitle) {
+      throw new Error('Transaction title cannot be empty.');
+    }
+    const nextDate = input.transactionDate ?? existing.transactionDate;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) {
+      throw new Error('Transaction date must be in YYYY-MM-DD format.');
+    }
+    const nextCurrency = (input.currencyCode ?? existing.currencyCode).trim().toUpperCase();
+    if (!isValidIsoCurrencyCode(nextCurrency)) {
+      throw new Error('Transaction currency code must be a valid 3-letter ISO code.');
     }
 
     const db = await this.getDb();
     const now = new Date().toISOString();
 
-    await db.runAsync(
-      `UPDATE transactions
-       SET type = ?,
-           title = ?,
-           amount_minor = ?,
-           category_id = ?,
-           category_name_snapshot = ?,
-           payment_method = ?,
-           transaction_date = ?,
-           note = ?,
-           updated_at = ?
-       WHERE id = ?`,
-      input.type ?? existing.type,
-      (input.title ?? existing.title).trim(),
-      nextAmount,
-      input.categoryId !== undefined ? input.categoryId : existing.categoryId,
-      input.categoryNameSnapshot ?? existing.categoryNameSnapshot,
-      input.paymentMethod ?? existing.paymentMethod,
-      input.transactionDate ?? existing.transactionDate,
-      input.note !== undefined ? input.note?.trim() || null : existing.note,
-      now,
-      id,
-    );
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `UPDATE transactions
+         SET type = ?,
+             title = ?,
+             amount_minor = ?,
+             currency_code = ?,
+             category_id = ?,
+             category_name_snapshot = ?,
+             payment_method_id = ?,
+             payment_method = ?,
+             transaction_date = ?,
+             note = ?,
+             updated_at = ?
+         WHERE id = ?`,
+        input.type ?? existing.type,
+        nextTitle,
+        nextAmount,
+        nextCurrency,
+        input.categoryId !== undefined ? input.categoryId : existing.categoryId,
+        input.categoryNameSnapshot ?? existing.categoryNameSnapshot,
+        input.paymentMethodId !== undefined ? input.paymentMethodId : existing.paymentMethodId,
+        (input.paymentMethod ?? existing.paymentMethod).trim() || 'Cash',
+        nextDate,
+        input.note !== undefined ? input.note?.trim() || null : existing.note,
+        now,
+        id,
+      );
+
+      if (input.tagIds !== undefined) {
+        await this.replaceTransactionTags(db, id, input.tagIds);
+      }
+    });
 
     const updated = await this.getById(id);
     if (!updated) {

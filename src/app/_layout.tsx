@@ -92,8 +92,11 @@ export default function RootLayout() {
         <Stack.Screen name="onboarding/index" options={{ gestureEnabled: false }} />
         <Stack.Screen name="transactions/add" options={{ presentation: 'modal' }} />
         <Stack.Screen name="transactions/[id]" />
+        <Stack.Screen name="notifications/index" />
         <Stack.Screen name="calendar/index" />
         <Stack.Screen name="categories/index" />
+        <Stack.Screen name="tags/index" />
+        <Stack.Screen name="payment-methods/index" />
         <Stack.Screen name="budgets/index" />
         <Stack.Screen name="backup/index" />
       </Stack>

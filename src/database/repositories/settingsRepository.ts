@@ -1,4 +1,4 @@
-import { DEFAULT_CURRENCY_CODE } from '@/constants/currencies';
+import { DEFAULT_CURRENCY_CODE, isValidIsoCurrencyCode } from '@/constants/currencies';
 import type { SqlDatabaseAdapter } from '@/database/driver';
 import type { AppSettingsRow, ISettingsRepository, UpdateSettingsInput } from '@/types/database';
 import type { AppSettings } from '@/types/models';
@@ -16,8 +16,10 @@ export class SQLiteSettingsRepository implements ISettingsRepository {
     if (!row) {
       await db.runAsync(
         `INSERT OR IGNORE INTO app_settings (
-          id, currency_code, opening_balance_minor, theme, date_format, onboarding_completed
-        ) VALUES (1, ?, 0, 'system', 'DD MMM YYYY', 0)`,
+          id, currency_code, opening_balance_minor, opening_balance_currency_code,
+          theme, date_format, onboarding_completed
+        ) VALUES (1, ?, 0, ?, 'system', 'DD MMM YYYY', 0)`,
+        DEFAULT_CURRENCY_CODE,
         DEFAULT_CURRENCY_CODE,
       );
       const seeded = await db.getFirstAsync<AppSettingsRow>(
@@ -33,12 +35,26 @@ export class SQLiteSettingsRepository implements ISettingsRepository {
 
   async update(input: UpdateSettingsInput): Promise<AppSettings> {
     const current = await this.get();
+    const nextCurrency = (input.currencyCode ?? current.currencyCode).trim().toUpperCase();
+    if (!isValidIsoCurrencyCode(nextCurrency)) {
+      throw new Error('Unsupported currency code.');
+    }
+
+    const nextOpeningCurrency = (
+      input.openingBalanceCurrencyCode ?? current.openingBalanceCurrencyCode
+    )
+      .trim()
+      .toUpperCase();
+    if (!isValidIsoCurrencyCode(nextOpeningCurrency)) {
+      throw new Error('Unsupported opening balance currency code.');
+    }
+
     const nextOpeningBalance =
       input.openingBalanceMinor !== undefined
         ? input.openingBalanceMinor
         : current.openingBalanceMinor;
 
-    if (!Number.isInteger(nextOpeningBalance) || nextOpeningBalance < 0) {
+    if (!Number.isSafeInteger(nextOpeningBalance) || nextOpeningBalance < 0) {
       throw new Error('Opening balance must be a non-negative integer in minor units.');
     }
 
@@ -47,12 +63,14 @@ export class SQLiteSettingsRepository implements ISettingsRepository {
       `UPDATE app_settings
        SET currency_code = ?,
            opening_balance_minor = ?,
+           opening_balance_currency_code = ?,
            theme = ?,
            date_format = ?,
            onboarding_completed = ?
        WHERE id = 1`,
-      input.currencyCode ?? current.currencyCode,
+      nextCurrency,
       nextOpeningBalance,
+      nextOpeningCurrency,
       input.theme ?? current.theme,
       input.dateFormat ?? current.dateFormat,
       input.onboardingCompleted !== undefined

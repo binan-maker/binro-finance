@@ -1,12 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppButton, AppCard, AppInput, AppScreen } from '@/components/common';
+import { CurrencyPickerModal } from '@/components/forms/CurrencyPickerModal';
 import {
   DEFAULT_CURRENCY_CODE,
-  SUPPORTED_CURRENCIES,
   getCurrencyConfig,
 } from '@/constants/currencies';
 import { Radius, Spacing } from '@/constants/theme';
@@ -14,28 +14,44 @@ import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/store/app-store';
 import { validateNonNegativeAmountInput } from '@/utils/validation';
 
+const FEATURED_CODES = ['INR', 'USD', 'EUR', 'GBP', 'JPY', 'AED'];
+
 export default function OnboardingScreen() {
   const theme = useTheme();
   const router = useRouter();
   const settings = useAppStore((s) => s.settings);
+  const currencies = useAppStore((s) => s.currencies);
   const completeOnboarding = useAppStore((s) => s.completeOnboarding);
 
   const [currencyCode, setCurrencyCode] = useState(
     settings.currencyCode || DEFAULT_CURRENCY_CODE,
   );
   const [openingBalanceText, setOpeningBalanceText] = useState('');
+  const [currencyModalVisible, setCurrencyModalVisible] = useState(false);
   const [amountError, setAmountError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const selectedCurrency = getCurrencyConfig(currencyCode);
+  const selectedCurrency = getCurrencyConfig(currencyCode, currencies);
+
+  const featuredCurrencies = useMemo(() => {
+    const base = FEATURED_CODES.map((code) => getCurrencyConfig(code, currencies));
+    if (!FEATURED_CODES.includes(selectedCurrency.code)) {
+      return [selectedCurrency, ...base.slice(0, 5)];
+    }
+    return base;
+  }, [currencies, selectedCurrency]);
 
   const handleContinue = async () => {
     if (submitting) return;
     setAmountError(null);
     setSubmitError(null);
 
-    const validation = validateNonNegativeAmountInput(openingBalanceText, currencyCode);
+    const validation = validateNonNegativeAmountInput(
+      openingBalanceText,
+      currencyCode,
+      currencies,
+    );
     if (!validation.valid || validation.value === undefined) {
       setAmountError(validation.error ?? 'Enter a valid opening balance.');
       return;
@@ -56,29 +72,49 @@ export default function OnboardingScreen() {
   };
 
   return (
-    <AppScreen keyboardAvoiding edges={['top', 'bottom', 'left', 'right']}>
+    <AppScreen
+      keyboardAvoiding
+      edges={['top', 'bottom', 'left', 'right']}
+      footer={
+        <View style={styles.footerWrap}>
+          {submitError ? (
+            <Text style={[styles.submitError, { color: theme.danger }]}>{submitError}</Text>
+          ) : null}
+          <AppButton
+            label="Continue to Dashboard"
+            onPress={() => void handleContinue()}
+            loading={submitting}
+            size="lg"
+            fullWidth
+          />
+        </View>
+      }>
       <View style={styles.hero}>
         <View style={[styles.badge, { backgroundColor: theme.primarySoft }]}>
-          <Ionicons name="wallet-outline" size={28} color={theme.primary} />
+          <Ionicons name="wallet" size={28} color={theme.primary} />
         </View>
         <Text style={[styles.title, { color: theme.text }]}>
           Welcome to BinRo Finance
         </Text>
         <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
-          Track your income, expenses, and monthly budgets privately on your device. No account or internet connection required.
+          Track your income, expenses, tags, and multi-currency activity privately on your device. No account or internet connection required.
         </Text>
       </View>
 
       <AppCard>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>
-          1. Select Your Currency
-        </Text>
-        <Text style={[styles.sectionHint, { color: theme.textSecondary }]}>
-          You can change this anytime in Settings.
-        </Text>
+        <View style={styles.sectionHeaderRow}>
+          <View style={styles.flex1}>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>
+              1. Select Default Currency
+            </Text>
+            <Text style={[styles.sectionHint, { color: theme.textSecondary }]}>
+              You can also choose any currency per transaction.
+            </Text>
+          </View>
+        </View>
 
         <View style={styles.currencyGrid}>
-          {SUPPORTED_CURRENCIES.map((currency) => {
+          {featuredCurrencies.map((currency) => {
             const isSelected = currency.code === currencyCode;
             return (
               <Pressable
@@ -102,7 +138,9 @@ export default function OnboardingScreen() {
                   style={[
                     styles.currencySymbol,
                     { color: isSelected ? theme.primary : theme.text },
-                  ]}>
+                  ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit>
                   {currency.symbol}
                 </Text>
                 <View style={styles.currencyTextWrap}>
@@ -123,6 +161,22 @@ export default function OnboardingScreen() {
             );
           })}
         </View>
+
+        <Pressable
+          onPress={() => setCurrencyModalVisible(true)}
+          accessibilityRole="button"
+          style={[
+            styles.browseBtn,
+            { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
+          ]}>
+          <View style={styles.browseLeft}>
+            <Ionicons name="globe-outline" size={18} color={theme.primary} />
+            <Text style={[styles.browseText, { color: theme.text }]}>
+              Browse All Currencies ({currencies.length}+)
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
+        </Pressable>
       </AppCard>
 
       <AppCard>
@@ -130,12 +184,11 @@ export default function OnboardingScreen() {
           2. Opening Balance (Optional)
         </Text>
         <Text style={[styles.sectionHint, { color: theme.textSecondary }]}>
-          Enter how much money you currently have available. Leave blank to start at{' '}
-          {selectedCurrency.symbol}0.
+          Enter how much money you currently have available in {selectedCurrency.code}. Leave blank to start at {selectedCurrency.symbol}0.
         </Text>
 
         <AppInput
-          label="Opening Balance"
+          label={`Opening Balance (${selectedCurrency.code})`}
           prefix={selectedCurrency.symbol}
           value={openingBalanceText}
           onChangeText={(text) => {
@@ -145,20 +198,19 @@ export default function OnboardingScreen() {
           keyboardType={selectedCurrency.minorUnits === 0 ? 'number-pad' : 'decimal-pad'}
           placeholder={selectedCurrency.minorUnits === 0 ? '0' : '0.00'}
           error={amountError}
-          helperText="Opening balance is tracked separately from your recorded income."
+          helperText="Opening balance is tracked in its own currency separately from your income."
         />
       </AppCard>
 
-      {submitError ? (
-        <Text style={[styles.submitError, { color: theme.danger }]}>{submitError}</Text>
-      ) : null}
-
-      <AppButton
-        label="Continue to Dashboard"
-        onPress={() => void handleContinue()}
-        loading={submitting}
-        size="lg"
-        fullWidth
+      <CurrencyPickerModal
+        visible={currencyModalVisible}
+        currencies={currencies}
+        selectedCode={currencyCode}
+        onSelect={(curr) => {
+          setCurrencyCode(curr.code);
+          setAmountError(null);
+        }}
+        onClose={() => setCurrencyModalVisible(false)}
       />
     </AppScreen>
   );
@@ -186,6 +238,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  flex1: {
+    flex: 1,
+  },
   sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
@@ -193,6 +253,7 @@ const styles = StyleSheet.create({
   sectionHint: {
     fontSize: 13,
     lineHeight: 18,
+    marginTop: 2,
   },
   currencyGrid: {
     flexDirection: 'row',
@@ -214,7 +275,7 @@ const styles = StyleSheet.create({
   currencySymbol: {
     fontSize: 18,
     fontWeight: '700',
-    minWidth: 26,
+    minWidth: 28,
     textAlign: 'center',
   },
   currencyTextWrap: {
@@ -226,6 +287,28 @@ const styles = StyleSheet.create({
   },
   currencyName: {
     fontSize: 11,
+  },
+  browseBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: Spacing.two + 3,
+    marginTop: Spacing.one,
+  },
+  browseLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  browseText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  footerWrap: {
+    gap: Spacing.two,
   },
   submitError: {
     fontSize: 13,

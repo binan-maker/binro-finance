@@ -1,9 +1,10 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
-  AppButton,
   AppCard,
   AppHeader,
   AppScreen,
@@ -31,14 +32,20 @@ export default function TransactionDetailsScreen() {
 
   const settings = useAppStore((s) => s.settings);
   const categories = useAppStore((s) => s.categories);
+  const tags = useAppStore((s) => s.tags);
+  const paymentMethods = useAppStore((s) => s.paymentMethods);
+  const currencies = useAppStore((s) => s.currencies);
   const transactions = useAppStore((s) => s.transactions);
   const updateTransaction = useAppStore((s) => s.updateTransaction);
   const deleteTransaction = useAppStore((s) => s.deleteTransaction);
+  const createTag = useAppStore((s) => s.createTag);
+  const createPaymentMethod = useAppStore((s) => s.createPaymentMethod);
 
   const txFromStore = transactions.find((t) => t.id === id) ?? null;
   const [fetchedTx, setFetchedTx] = useState<Transaction | null>(null);
   const [loading, setLoading] = useState(!txFromStore && Boolean(id));
   const [isEditing, setIsEditing] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
   const [deleteDialogVisible, setDeleteDialogVisible] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -95,11 +102,16 @@ export default function TransactionDetailsScreen() {
   const category = loadedTx.categoryId
     ? categories.find((c) => c.id === loadedTx.categoryId)
     : undefined;
+  const attachedTags = tags.filter((t) => (loadedTx.tagIds ?? []).includes(t.id));
   const isIncome = loadedTx.type === 'income';
   const signedAmount = isIncome ? loadedTx.amountMinor : -loadedTx.amountMinor;
 
   const handleUpdate = async (values: TransactionFormValues) => {
-    await updateTransaction(loadedTx.id, values);
+    // Protect historical currency on existing transaction edits
+    await updateTransaction(loadedTx.id, {
+      ...values,
+      currencyCode: loadedTx.currencyCode,
+    });
     setIsEditing(false);
   };
 
@@ -123,130 +135,216 @@ export default function TransactionDetailsScreen() {
     }
   };
 
-  return (
-    <AppScreen keyboardAvoiding>
-      <AppHeader
-        title={isEditing ? 'Edit Transaction' : 'Transaction Details'}
-        showBack
-        onBackPress={isEditing ? () => setIsEditing(false) : undefined}
-      />
-
-      {isEditing ? (
+  if (isEditing) {
+    return (
+      <SafeAreaView
+        edges={['top', 'bottom', 'left', 'right']}
+        style={[styles.editSafeArea, { backgroundColor: theme.background }]}>
+        <View style={styles.editHeaderWrap}>
+          <AppHeader
+            title="Edit Transaction"
+            showBack
+            onBackPress={() => setIsEditing(false)}
+          />
+        </View>
         <TransactionForm
-          currencyCode={settings.currencyCode}
+          defaultCurrencyCode={loadedTx.currencyCode}
           dateFormat={settings.dateFormat}
           categories={categories}
+          tags={tags}
+          paymentMethods={paymentMethods}
+          currencies={currencies}
+          isEditing
           initialValues={{
             type: loadedTx.type,
             title: loadedTx.title,
             amountMinor: loadedTx.amountMinor,
+            currencyCode: loadedTx.currencyCode,
             categoryId: loadedTx.categoryId,
+            paymentMethodId: loadedTx.paymentMethodId,
             paymentMethod: loadedTx.paymentMethod,
+            tagIds: loadedTx.tagIds,
             transactionDate: loadedTx.transactionDate,
             note: loadedTx.note,
           }}
           submitLabel="Save Changes"
+          onCreateTag={createTag}
+          onCreatePaymentMethod={createPaymentMethod}
           onSubmit={handleUpdate}
           onCancel={() => setIsEditing(false)}
         />
-      ) : (
-        <>
-          <AppCard>
-            <View style={styles.heroTop}>
-              <CategoryIcon
-                icon={category?.icon}
-                color={category?.color}
-                size={48}
-              />
-              <View
-                style={[
-                  styles.typeBadge,
-                  {
-                    backgroundColor: isIncome
-                      ? theme.incomeSoft
-                      : theme.expenseSoft,
-                  },
-                ]}>
-                <Text
-                  style={[
-                    styles.typeText,
-                    { color: isIncome ? theme.income : theme.expense },
-                  ]}>
-                  {isIncome ? 'Income' : 'Expense'}
-                </Text>
-              </View>
-            </View>
+      </SafeAreaView>
+    );
+  }
 
-            <Text style={[styles.txTitle, { color: theme.text }]}>
-              {loadedTx.title}
-            </Text>
+  return (
+    <AppScreen edges={['top', 'bottom', 'left', 'right']}>
+      <AppHeader
+        title="Transaction Details"
+        showBack
+        rightAction={
+          <Pressable
+            onPress={() => setMenuVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="More actions"
+            style={[
+              styles.overflowBtn,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+            ]}>
+            <Ionicons name="ellipsis-vertical" size={18} color={theme.text} />
+          </Pressable>
+        }
+      />
+
+      <AppCard>
+        <View style={styles.heroTop}>
+          <CategoryIcon
+            icon={category?.icon}
+            color={category?.color}
+            size={48}
+          />
+          <View
+            style={[
+              styles.typeBadge,
+              {
+                backgroundColor: isIncome
+                  ? theme.incomeSoft
+                  : theme.expenseSoft,
+              },
+            ]}>
             <Text
               style={[
-                styles.txAmount,
+                styles.typeText,
                 { color: isIncome ? theme.income : theme.expense },
               ]}>
-              {formatMoney(signedAmount, settings.currencyCode, { showSign: true })}
+              {isIncome ? 'Income' : 'Expense'}
             </Text>
-          </AppCard>
-
-          <AppCard>
-            <DetailRow
-              label="Category"
-              value={category?.name ?? loadedTx.categoryNameSnapshot}
-            />
-            <View style={[styles.divider, { backgroundColor: theme.border }]} />
-            <DetailRow
-              label="Date"
-              value={formatDateForDisplay(
-                loadedTx.transactionDate,
-                settings.dateFormat,
-              )}
-            />
-            <View style={[styles.divider, { backgroundColor: theme.border }]} />
-            <DetailRow label="Payment Method" value={loadedTx.paymentMethod} />
-            <View style={[styles.divider, { backgroundColor: theme.border }]} />
-            <DetailRow
-              label="Note"
-              value={loadedTx.note ? loadedTx.note : 'No note added'}
-            />
-            <View style={[styles.divider, { backgroundColor: theme.border }]} />
-            <DetailRow
-              label="Created"
-              value={formatDateTimeForDisplay(loadedTx.createdAt, settings.dateFormat)}
-            />
-          </AppCard>
-
-          {actionError ? (
-            <Text style={[styles.errorText, { color: theme.danger }]}>
-              {actionError}
-            </Text>
-          ) : null}
-
-          <View style={styles.actions}>
-            <View style={styles.flex1}>
-              <AppButton
-                label="Edit"
-                variant="outline"
-                onPress={() => setIsEditing(true)}
-                fullWidth
-              />
-            </View>
-            <View style={styles.flex1}>
-              <AppButton
-                label="Delete"
-                variant="danger"
-                onPress={() => setDeleteDialogVisible(true)}
-                fullWidth
-              />
-            </View>
           </View>
-        </>
-      )}
+        </View>
+
+        <Text style={[styles.txTitle, { color: theme.text }]}>
+          {loadedTx.title}
+        </Text>
+        <Text
+          style={[
+            styles.txAmount,
+            { color: isIncome ? theme.income : theme.expense },
+          ]}>
+          {formatMoney(signedAmount, loadedTx.currencyCode, {
+            showSign: true,
+            catalog: currencies,
+          })}
+        </Text>
+      </AppCard>
+
+      <AppCard>
+        <DetailRow
+          label="Category"
+          value={category?.name ?? loadedTx.categoryNameSnapshot}
+        />
+        <View style={[styles.divider, { backgroundColor: theme.border }]} />
+        <DetailRow
+          label="Date"
+          value={formatDateForDisplay(
+            loadedTx.transactionDate,
+            settings.dateFormat,
+          )}
+        />
+        <View style={[styles.divider, { backgroundColor: theme.border }]} />
+        <DetailRow label="Currency" value={loadedTx.currencyCode} />
+        <View style={[styles.divider, { backgroundColor: theme.border }]} />
+        <DetailRow label="Payment Method" value={loadedTx.paymentMethod} />
+
+        {attachedTags.length > 0 ? (
+          <>
+            <View style={[styles.divider, { backgroundColor: theme.border }]} />
+            <View style={styles.tagsRow}>
+              <Text style={[styles.detailLabel, { color: theme.textSecondary }]}>
+                Tags
+              </Text>
+              <View style={styles.tagsWrap}>
+                {attachedTags.map((tag) => (
+                  <View
+                    key={tag.id}
+                    style={[
+                      styles.tagChip,
+                      {
+                        backgroundColor: `${tag.color}20`,
+                        borderColor: tag.color,
+                      },
+                    ]}>
+                    <View style={[styles.tagDot, { backgroundColor: tag.color }]} />
+                    <Text style={[styles.tagText, { color: theme.text }]}>
+                      {tag.name}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          </>
+        ) : null}
+
+        <View style={[styles.divider, { backgroundColor: theme.border }]} />
+        <DetailRow
+          label="Note"
+          value={loadedTx.note ? loadedTx.note : 'No note added'}
+        />
+        <View style={[styles.divider, { backgroundColor: theme.border }]} />
+        <DetailRow
+          label="Recorded"
+          value={formatDateTimeForDisplay(loadedTx.createdAt, settings.dateFormat)}
+        />
+      </AppCard>
+
+      {actionError ? (
+        <Text style={[styles.errorText, { color: theme.danger }]}>
+          {actionError}
+        </Text>
+      ) : null}
+
+      {/* Overflow Action Menu */}
+      <Modal
+        visible={menuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}>
+        <Pressable
+          style={styles.menuBackdrop}
+          onPress={() => setMenuVisible(false)}>
+          <View
+            style={[
+              styles.menuCard,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+            ]}>
+            <Pressable
+              onPress={() => {
+                setMenuVisible(false);
+                setIsEditing(true);
+              }}
+              style={styles.menuItem}>
+              <Ionicons name="create-outline" size={18} color={theme.text} />
+              <Text style={[styles.menuItemText, { color: theme.text }]}>Edit</Text>
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+            <Pressable
+              onPress={() => {
+                setMenuVisible(false);
+                setDeleteDialogVisible(true);
+              }}
+              style={styles.menuItem}>
+              <Ionicons name="trash-outline" size={18} color={theme.danger} />
+              <Text style={[styles.menuItemText, { color: theme.danger }]}>Delete</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
 
       <ConfirmDialog
         visible={deleteDialogVisible}
         title="Delete Transaction?"
-        message={`Delete "${loadedTx.title}" (${formatMoney(loadedTx.amountMinor, settings.currencyCode)})? Your balance and reports will update immediately.`}
+        message={`Delete "${loadedTx.title}" (${formatMoney(loadedTx.amountMinor, loadedTx.currencyCode, { catalog: currencies })})? Your balance and reports will update immediately.`}
         confirmLabel="Delete"
         cancelLabel="Cancel"
         destructive
@@ -271,6 +369,21 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
+  editSafeArea: {
+    flex: 1,
+  },
+  editHeaderWrap: {
+    paddingHorizontal: Spacing.three,
+    paddingTop: Spacing.two,
+  },
+  overflowBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   heroTop: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -311,6 +424,38 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textAlign: 'right',
   },
+  tagsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: Spacing.three,
+    paddingVertical: Spacing.one,
+  },
+  tagsWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  tagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  tagDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  tagText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
   divider: {
     height: 1,
     width: '100%',
@@ -320,11 +465,28 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  actions: {
-    flexDirection: 'row',
-    gap: Spacing.two,
-  },
-  flex1: {
+  menuBackdrop: {
     flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'flex-end',
+    paddingTop: 72,
+    paddingRight: Spacing.three,
+  },
+  menuCard: {
+    width: 170,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two + 2,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.three - 2,
+  },
+  menuItemText: {
+    fontSize: 15,
+    fontWeight: '600',
   },
 });

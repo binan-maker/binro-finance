@@ -1,4 +1,4 @@
-import type { CategoryType, PaymentMethod } from '@/types/models';
+import type { CategoryType } from '@/types/models';
 
 export interface DefaultCategorySeed {
   id: string;
@@ -8,34 +8,47 @@ export interface DefaultCategorySeed {
   color: string;
 }
 
-export const PAYMENT_METHODS: readonly PaymentMethod[] = [
+export interface DefaultPaymentMethodSeed {
+  id: string;
+  name: string;
+  icon: string;
+}
+
+export const DEFAULT_PAYMENT_METHODS: readonly DefaultPaymentMethodSeed[] = [
+  { id: 'pm-cash', name: 'Cash', icon: 'cash' },
+  { id: 'pm-upi', name: 'UPI', icon: 'qr-code' },
+  { id: 'pm-card', name: 'Card', icon: 'card' },
+  { id: 'pm-bank', name: 'Bank Transfer', icon: 'bank' },
+] as const;
+
+// Preserved for legacy test/helper references
+export const PAYMENT_METHODS: readonly string[] = [
   'Cash',
   'UPI',
   'Card',
+  'Bank Transfer',
   'Bank transfer',
   'Other',
 ] as const;
 
 export const DEFAULT_EXPENSE_CATEGORIES: readonly DefaultCategorySeed[] = [
-  { id: 'cat-exp-food', name: 'Food and Dining', type: 'expense', icon: 'utensils', color: '#E65100' },
-  { id: 'cat-exp-transport', name: 'Transportation', type: 'expense', icon: 'car', color: '#1565C0' },
-  { id: 'cat-exp-shopping', name: 'Shopping', type: 'expense', icon: 'shopping-bag', color: '#AD1457' },
-  { id: 'cat-exp-entertainment', name: 'Entertainment', type: 'expense', icon: 'film', color: '#6A1B9A' },
-  { id: 'cat-exp-bills', name: 'Bills and Utilities', type: 'expense', icon: 'zap', color: '#00838F' },
-  { id: 'cat-exp-health', name: 'Health', type: 'expense', icon: 'heart-pulse', color: '#C62828' },
-  { id: 'cat-exp-education', name: 'Education', type: 'expense', icon: 'book-open', color: '#283593' },
-  { id: 'cat-exp-travel', name: 'Travel', type: 'expense', icon: 'plane', color: '#0277BD' },
-  { id: 'cat-exp-rent', name: 'Rent', type: 'expense', icon: 'home', color: '#4E342E' },
-  { id: 'cat-exp-personal', name: 'Personal Care', type: 'expense', icon: 'sparkles', color: '#8E24AA' },
-  { id: 'cat-exp-other', name: 'Other', type: 'expense', icon: 'tag', color: '#546E7A' },
+  { id: 'cat-exp-food', name: 'Food & Drink', type: 'expense', icon: 'utensils', color: '#059669' },
+  { id: 'cat-exp-shopping', name: 'Shopping', type: 'expense', icon: 'shopping-bag', color: '#0D9488' },
+  { id: 'cat-exp-transport', name: 'Transport', type: 'expense', icon: 'car', color: '#10B981' },
+  { id: 'cat-exp-health', name: 'Health', type: 'expense', icon: 'heart-pulse', color: '#047857' },
+  { id: 'cat-exp-travel', name: 'Travel', type: 'expense', icon: 'plane', color: '#0891B2' },
+  { id: 'cat-exp-bills', name: 'Utilities', type: 'expense', icon: 'zap', color: '#14B8A6' },
+  { id: 'cat-exp-rent', name: 'Rent', type: 'expense', icon: 'home', color: '#065F46' },
+  { id: 'cat-exp-education', name: 'Education', type: 'expense', icon: 'book-open', color: '#4F46E5' },
+  { id: 'cat-exp-entertainment', name: 'Entertainment', type: 'expense', icon: 'film', color: '#7C3AED' },
+  { id: 'cat-exp-other', name: 'Other', type: 'expense', icon: 'tag', color: '#475569' },
 ] as const;
 
 export const DEFAULT_INCOME_CATEGORIES: readonly DefaultCategorySeed[] = [
-  { id: 'cat-inc-salary', name: 'Salary', type: 'income', icon: 'briefcase', color: '#2E7D32' },
-  { id: 'cat-inc-business', name: 'Business', type: 'income', icon: 'building', color: '#00695C' },
-  { id: 'cat-inc-freelance', name: 'Freelance', type: 'income', icon: 'laptop', color: '#1976D2' },
-  { id: 'cat-inc-gifts', name: 'Gifts', type: 'income', icon: 'gift', color: '#D81B60' },
-  { id: 'cat-inc-other', name: 'Other Income', type: 'income', icon: 'wallet', color: '#558B2F' },
+  { id: 'cat-inc-salary', name: 'Salary', type: 'income', icon: 'briefcase', color: '#059669' },
+  { id: 'cat-inc-business', name: 'Business', type: 'income', icon: 'building', color: '#0D9488' },
+  { id: 'cat-inc-freelance', name: 'Freelance', type: 'income', icon: 'laptop', color: '#10B981' },
+  { id: 'cat-inc-other', name: 'Other', type: 'income', icon: 'wallet', color: '#475569' },
 ] as const;
 
 export const DEFAULT_CATEGORIES: readonly DefaultCategorySeed[] = [
@@ -64,23 +77,39 @@ export const CATEGORY_ICON_OPTIONS: readonly string[] = [
   'shopping-cart',
   'phone',
   'shield',
+  'cash',
+  'card',
+  'bank',
+  'qr-code',
 ] as const;
 
+// Coordinated green-led brand palette with distinguishable accent tones
 export const CATEGORY_COLOR_OPTIONS: readonly string[] = [
-  '#E65100',
-  '#1565C0',
-  '#AD1457',
-  '#6A1B9A',
-  '#00838F',
-  '#C62828',
-  '#283593',
-  '#0277BD',
-  '#4E342E',
-  '#8E24AA',
-  '#2E7D32',
-  '#00695C',
-  '#546E7A',
-  '#D81B60',
-  '#558B2F',
-  '#EF6C00',
+  '#059669',
+  '#10B981',
+  '#047857',
+  '#065F46',
+  '#0D9488',
+  '#14B8A6',
+  '#0891B2',
+  '#15803D',
+  '#65A30D',
+  '#D97706',
+  '#4F46E5',
+  '#7C3AED',
+  '#DB2777',
+  '#DC2626',
+  '#475569',
+  '#334155',
+] as const;
+
+export const TAG_COLOR_OPTIONS: readonly string[] = [
+  '#10B981',
+  '#0D9488',
+  '#0891B2',
+  '#65A30D',
+  '#D97706',
+  '#7C3AED',
+  '#DB2777',
+  '#475569',
 ] as const;

@@ -1,8 +1,17 @@
 import type { SqlDatabaseAdapter } from '../driver';
-import { initialMigration, seedDefaultCategories, seedDefaultSettings } from './001_initial';
+import { initialMigration, seedDefaultSettings } from './001_initial';
+import {
+  seedDefaultCurrencies,
+  seedDefaultPaymentMethods,
+  seedV2DefaultCategoriesSafely,
+  v2RedesignMigration,
+} from './002_v2_redesign';
 import type { DatabaseMigration } from './types';
 
-export const MIGRATIONS: readonly DatabaseMigration[] = [initialMigration];
+export const MIGRATIONS: readonly DatabaseMigration[] = [
+  initialMigration,
+  v2RedesignMigration,
+];
 
 interface UserVersionRow {
   user_version: number;
@@ -26,10 +35,12 @@ export async function runMigrations(db: SqlDatabaseAdapter): Promise<number> {
     currentVersion = migration.version;
   }
 
-  // Ensure default seed rows exist safely without duplicating if database was cleared/upgraded
+  // Ensure baseline seed rows exist safely without duplicating after partial clears or upgrades
   await db.withTransactionAsync(async () => {
     await seedDefaultSettings(db);
-    await seedDefaultCategories(db);
+    await seedDefaultPaymentMethods(db);
+    await seedDefaultCurrencies(db);
+    await seedV2DefaultCategoriesSafely(db);
   });
 
   return currentVersion;

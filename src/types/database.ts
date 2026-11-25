@@ -1,11 +1,16 @@
+import type { CurrencyConfig } from '@/constants/currencies';
+
 import type {
+  AppNotification,
   AppSettings,
   Budget,
   BudgetPeriod,
   Category,
   CategoryType,
   DateFormatPreference,
-  PaymentMethod,
+  NotificationType,
+  PaymentMethodRecord,
+  Tag,
   ThemePreference,
   Transaction,
   TransactionType,
@@ -16,8 +21,10 @@ export interface TransactionRow {
   type: TransactionType;
   title: string;
   amount_minor: number;
+  currency_code: string | null;
   category_id: string | null;
   category_name_snapshot: string | null;
+  payment_method_id: string | null;
   payment_method: string | null;
   transaction_date: string;
   note: string | null;
@@ -29,6 +36,7 @@ export interface CategoryRow {
   id: string;
   name: string;
   type: CategoryType;
+  parent_id: string | null;
   icon: string | null;
   color: string | null;
   is_default: number | null;
@@ -37,9 +45,41 @@ export interface CategoryRow {
   updated_at: string;
 }
 
+export interface TagRow {
+  id: string;
+  name: string;
+  color: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TransactionTagRow {
+  transaction_id: string;
+  tag_id: string;
+}
+
+export interface PaymentMethodRow {
+  id: string;
+  name: string;
+  icon: string | null;
+  is_builtin: number | null;
+  is_archived: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CurrencyCatalogRow {
+  code: string;
+  name: string;
+  symbol: string;
+  minor_units: number;
+  updated_at: string;
+}
+
 export interface BudgetRow {
   id: string;
   amount_minor: number;
+  currency_code: string | null;
   period: BudgetPeriod;
   month: number;
   year: number;
@@ -52,9 +92,20 @@ export interface AppSettingsRow {
   id: number;
   currency_code: string;
   opening_balance_minor: number;
+  opening_balance_currency_code: string | null;
   theme: ThemePreference;
   date_format: DateFormatPreference;
   onboarding_completed: number;
+}
+
+export interface NotificationRow {
+  id: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  is_read: number;
+  metadata_json: string | null;
+  created_at: string;
 }
 
 export interface CreateTransactionInput {
@@ -62,9 +113,12 @@ export interface CreateTransactionInput {
   type: TransactionType;
   title: string;
   amountMinor: number;
+  currencyCode: string;
   categoryId: string | null;
   categoryNameSnapshot: string;
-  paymentMethod: PaymentMethod;
+  paymentMethodId?: string | null;
+  paymentMethod: string;
+  tagIds?: string[];
   transactionDate: string;
   note?: string | null;
 }
@@ -73,9 +127,12 @@ export interface UpdateTransactionInput {
   type?: TransactionType;
   title?: string;
   amountMinor?: number;
+  currencyCode?: string;
   categoryId?: string | null;
   categoryNameSnapshot?: string;
-  paymentMethod?: PaymentMethod;
+  paymentMethodId?: string | null;
+  paymentMethod?: string;
+  tagIds?: string[];
   transactionDate?: string;
   note?: string | null;
 }
@@ -86,7 +143,11 @@ export interface TransactionFilters {
   startDate?: string;
   endDate?: string;
   categoryId?: string;
-  paymentMethod?: PaymentMethod | 'all';
+  tagId?: string;
+  tagIds?: string[];
+  currencyCode?: string;
+  paymentMethodId?: string;
+  paymentMethod?: string | 'all';
   limit?: number;
   offset?: number;
 }
@@ -95,6 +156,7 @@ export interface CreateCategoryInput {
   id?: string;
   name: string;
   type: CategoryType;
+  parentId?: string | null;
   icon: string;
   color: string;
   isDefault?: boolean;
@@ -102,14 +164,40 @@ export interface CreateCategoryInput {
 
 export interface UpdateCategoryInput {
   name?: string;
+  parentId?: string | null;
   icon?: string;
   color?: string;
+  isArchived?: boolean;
+}
+
+export interface CreateTagInput {
+  id?: string;
+  name: string;
+  color: string;
+}
+
+export interface UpdateTagInput {
+  name?: string;
+  color?: string;
+}
+
+export interface CreatePaymentMethodInput {
+  id?: string;
+  name: string;
+  icon?: string;
+  isBuiltin?: boolean;
+}
+
+export interface UpdatePaymentMethodInput {
+  name?: string;
+  icon?: string;
   isArchived?: boolean;
 }
 
 export interface UpsertBudgetInput {
   id?: string;
   amountMinor: number;
+  currencyCode?: string;
   period?: BudgetPeriod;
   month: number;
   year: number;
@@ -119,9 +207,18 @@ export interface UpsertBudgetInput {
 export interface UpdateSettingsInput {
   currencyCode?: string;
   openingBalanceMinor?: number;
+  openingBalanceCurrencyCode?: string;
   theme?: ThemePreference;
   dateFormat?: DateFormatPreference;
   onboardingCompleted?: boolean;
+}
+
+export interface CreateNotificationInput {
+  id?: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  metadataJson?: string | null;
 }
 
 export interface BackupPayload {
@@ -130,13 +227,20 @@ export interface BackupPayload {
   appVersion: string;
   settings: AppSettings;
   categories: Category[];
+  tags?: Tag[];
+  paymentMethods?: PaymentMethodRecord[];
   budgets: Budget[];
   transactions: Transaction[];
+  notifications?: AppNotification[];
 }
 
 export interface RestoreResult {
   categoriesInserted: number;
   categoriesSkipped: number;
+  tagsInserted: number;
+  tagsSkipped: number;
+  paymentMethodsInserted: number;
+  paymentMethodsSkipped: number;
   budgetsInserted: number;
   budgetsSkipped: number;
   transactionsInserted: number;
@@ -160,6 +264,26 @@ export interface ICategoryRepository {
   update(id: string, input: UpdateCategoryInput): Promise<Category>;
 }
 
+export interface ITagRepository {
+  getAll(): Promise<Tag[]>;
+  getById(id: string): Promise<Tag | null>;
+  create(input: CreateTagInput): Promise<Tag>;
+  update(id: string, input: UpdateTagInput): Promise<Tag>;
+  delete(id: string): Promise<void>;
+}
+
+export interface IPaymentMethodRepository {
+  getAll(options?: { includeArchived?: boolean }): Promise<PaymentMethodRecord[]>;
+  getById(id: string): Promise<PaymentMethodRecord | null>;
+  create(input: CreatePaymentMethodInput): Promise<PaymentMethodRecord>;
+  update(id: string, input: UpdatePaymentMethodInput): Promise<PaymentMethodRecord>;
+}
+
+export interface ICurrencyRepository {
+  getAll(): Promise<CurrencyConfig[]>;
+  upsertMany(currencies: readonly CurrencyConfig[]): Promise<void>;
+}
+
 export interface IBudgetRepository {
   getByMonthYear(month: number, year: number): Promise<Budget[]>;
   getAll(): Promise<Budget[]>;
@@ -170,6 +294,13 @@ export interface IBudgetRepository {
 export interface ISettingsRepository {
   get(): Promise<AppSettings>;
   update(input: UpdateSettingsInput): Promise<AppSettings>;
+}
+
+export interface INotificationRepository {
+  getAll(): Promise<AppNotification[]>;
+  create(input: CreateNotificationInput): Promise<AppNotification>;
+  markAsRead(id: string): Promise<void>;
+  markAllAsRead(): Promise<void>;
 }
 
 export interface IBackupRepository {

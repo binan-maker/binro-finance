@@ -1,3 +1,4 @@
+import { DEFAULT_CURRENCY_CODE, isValidIsoCurrencyCode } from '@/constants/currencies';
 import type { SqlDatabaseAdapter } from '@/database/driver';
 import type { BudgetRow, IBudgetRepository, UpsertBudgetInput } from '@/types/database';
 import type { Budget } from '@/types/models';
@@ -8,8 +9,16 @@ import { mapBudgetRow } from './mappers';
 export class SQLiteBudgetRepository implements IBudgetRepository {
   constructor(private readonly getDb: () => Promise<SqlDatabaseAdapter>) {}
 
+  private async getFallbackCurrency(db: SqlDatabaseAdapter): Promise<string> {
+    const row = await db.getFirstAsync<{ currency_code: string }>(
+      'SELECT currency_code FROM app_settings WHERE id = 1 LIMIT 1',
+    );
+    return row?.currency_code?.trim().toUpperCase() || DEFAULT_CURRENCY_CODE;
+  }
+
   async getByMonthYear(month: number, year: number): Promise<Budget[]> {
     const db = await this.getDb();
+    const fallbackCurrency = await this.getFallbackCurrency(db);
     const rows = await db.getAllAsync<BudgetRow>(
       `SELECT * FROM budgets
        WHERE month = ? AND year = ?
@@ -17,27 +26,40 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
       month,
       year,
     );
-    return rows.map(mapBudgetRow);
+    return rows.map((row) => mapBudgetRow(row, fallbackCurrency));
   }
 
   async getAll(): Promise<Budget[]> {
     const db = await this.getDb();
+    const fallbackCurrency = await this.getFallbackCurrency(db);
     const rows = await db.getAllAsync<BudgetRow>(
       'SELECT * FROM budgets ORDER BY year DESC, month DESC, created_at ASC',
     );
-    return rows.map(mapBudgetRow);
+    return rows.map((row) => mapBudgetRow(row, fallbackCurrency));
   }
 
   async upsert(input: UpsertBudgetInput): Promise<Budget> {
-    if (!Number.isInteger(input.amountMinor) || input.amountMinor <= 0) {
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
       throw new Error('Budget amount must be a positive integer in minor units.');
     }
-    if (input.month < 1 || input.month > 12) {
+    if (!Number.isInteger(input.month) || input.month < 1 || input.month > 12) {
       throw new Error('Budget month must be between 1 and 12.');
+    }
+    if (!Number.isInteger(input.year) || input.year < 1970) {
+      throw new Error('Budget year must be 1970 or later.');
+    }
+    const period = input.period ?? 'monthly';
+    if (period !== 'monthly') {
+      throw new Error('Unsupported budget period.');
     }
 
     const db = await this.getDb();
-    const period = input.period ?? 'monthly';
+    const fallbackCurrency = await this.getFallbackCurrency(db);
+    const currencyCode = (input.currencyCode ?? fallbackCurrency).trim().toUpperCase();
+    if (!isValidIsoCurrencyCode(currencyCode)) {
+      throw new Error('Budget currency code must be a valid 3-letter ISO code.');
+    }
+
     const now = new Date().toISOString();
     let targetId = input.id ?? generateUUID();
 
@@ -46,37 +68,47 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
         input.categoryId === null
           ? await db.getFirstAsync<BudgetRow>(
               `SELECT * FROM budgets
-               WHERE period = ? AND month = ? AND year = ? AND category_id IS NULL
+               WHERE period = ? AND month = ? AND year = ?
+                 AND UPPER(COALESCE(currency_code, ?)) = UPPER(?)
+                 AND category_id IS NULL
                LIMIT 1`,
               period,
               input.month,
               input.year,
+              fallbackCurrency,
+              currencyCode,
             )
           : await db.getFirstAsync<BudgetRow>(
               `SELECT * FROM budgets
-               WHERE period = ? AND month = ? AND year = ? AND category_id = ?
+               WHERE period = ? AND month = ? AND year = ?
+                 AND UPPER(COALESCE(currency_code, ?)) = UPPER(?)
+                 AND category_id = ?
                LIMIT 1`,
               period,
               input.month,
               input.year,
+              fallbackCurrency,
+              currencyCode,
               input.categoryId,
             );
 
       if (existing) {
         targetId = existing.id;
         await db.runAsync(
-          'UPDATE budgets SET amount_minor = ?, updated_at = ? WHERE id = ?',
+          'UPDATE budgets SET amount_minor = ?, currency_code = ?, updated_at = ? WHERE id = ?',
           input.amountMinor,
+          currencyCode,
           now,
           existing.id,
         );
       } else {
         await db.runAsync(
           `INSERT INTO budgets (
-            id, amount_minor, period, month, year, category_id, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            id, amount_minor, currency_code, period, month, year, category_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           targetId,
           input.amountMinor,
+          currencyCode,
           period,
           input.month,
           input.year,
@@ -94,7 +126,7 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
     if (!row) {
       throw new Error('Failed to save budget.');
     }
-    return mapBudgetRow(row);
+    return mapBudgetRow(row, fallbackCurrency);
   }
 
   async delete(id: string): Promise<void> {

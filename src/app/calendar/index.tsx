@@ -27,10 +27,17 @@ import { formatMoney } from '@/utils/money';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
-interface DayTotals {
+interface CurrencyDayTotals {
+  currencyCode: string;
   incomeMinor: number;
   expenseMinor: number;
   netMinor: number;
+}
+
+interface DayEntry {
+  hasIncome: boolean;
+  hasExpense: boolean;
+  byCurrency: Map<string, CurrencyDayTotals>;
   transactions: Transaction[];
 }
 
@@ -40,6 +47,7 @@ export default function CalendarScreen() {
 
   const settings = useAppStore((s) => s.settings);
   const categories = useAppStore((s) => s.categories);
+  const currencies = useAppStore((s) => s.currencies);
   const transactions = useAppStore((s) => s.transactions);
 
   const todayISO = getTodayISODate();
@@ -55,25 +63,37 @@ export default function CalendarScreen() {
   );
 
   const dayMap = useMemo(() => {
-    const map = new Map<string, DayTotals>();
+    const map = new Map<string, DayEntry>();
     for (const tx of transactions) {
       let entry = map.get(tx.transactionDate);
       if (!entry) {
         entry = {
-          incomeMinor: 0,
-          expenseMinor: 0,
-          netMinor: 0,
+          hasIncome: false,
+          hasExpense: false,
+          byCurrency: new Map<string, CurrencyDayTotals>(),
           transactions: [],
         };
         map.set(tx.transactionDate, entry);
       }
+
+      const currEntry = entry.byCurrency.get(tx.currencyCode) ?? {
+        currencyCode: tx.currencyCode,
+        incomeMinor: 0,
+        expenseMinor: 0,
+        netMinor: 0,
+      };
+
       if (tx.type === 'income') {
-        entry.incomeMinor += tx.amountMinor;
-        entry.netMinor += tx.amountMinor;
+        entry.hasIncome = true;
+        currEntry.incomeMinor += tx.amountMinor;
+        currEntry.netMinor += tx.amountMinor;
       } else {
-        entry.expenseMinor += tx.amountMinor;
-        entry.netMinor -= tx.amountMinor;
+        entry.hasExpense = true;
+        currEntry.expenseMinor += tx.amountMinor;
+        currEntry.netMinor -= tx.amountMinor;
       }
+
+      entry.byCurrency.set(tx.currencyCode, currEntry);
       entry.transactions.push(tx);
     }
     return map;
@@ -109,15 +129,20 @@ export default function CalendarScreen() {
     cells.push(null);
   }
 
-  const selectedDayData = dayMap.get(selectedDate) ?? {
-    incomeMinor: 0,
-    expenseMinor: 0,
-    netMinor: 0,
-    transactions: [],
-  };
+  const selectedDayData = dayMap.get(selectedDate);
+  const selectedCurrencyTotals = selectedDayData
+    ? Array.from(selectedDayData.byCurrency.values())
+    : [
+        {
+          currencyCode: settings.currencyCode,
+          incomeMinor: 0,
+          expenseMinor: 0,
+          netMinor: 0,
+        },
+      ];
 
   return (
-    <AppScreen>
+    <AppScreen edges={['top', 'bottom', 'left', 'right']}>
       <AppHeader
         title="Calendar"
         subtitle="Date-wise activity"
@@ -194,7 +219,7 @@ export default function CalendarScreen() {
                 </Text>
 
                 <View style={styles.dotRow}>
-                  {info && info.incomeMinor > 0 ? (
+                  {info?.hasIncome ? (
                     <View
                       style={[
                         styles.dot,
@@ -206,7 +231,7 @@ export default function CalendarScreen() {
                       ]}
                     />
                   ) : null}
-                  {info && info.expenseMinor > 0 ? (
+                  {info?.hasExpense ? (
                     <View
                       style={[
                         styles.dot,
@@ -232,8 +257,8 @@ export default function CalendarScreen() {
               {formatDateForDisplay(selectedDate, settings.dateFormat)}
             </Text>
             <Text style={[styles.selectedCount, { color: theme.textSecondary }]}>
-              {selectedDayData.transactions.length} transaction
-              {selectedDayData.transactions.length === 1 ? '' : 's'}
+              {selectedDayData?.transactions.length ?? 0} transaction
+              {selectedDayData?.transactions.length === 1 ? '' : 's'}
             </Text>
           </View>
           <AppButton
@@ -244,38 +269,56 @@ export default function CalendarScreen() {
           />
         </View>
 
-        <View style={styles.totalsRow}>
-          <View style={[styles.totalTile, { backgroundColor: theme.incomeSoft }]}>
-            <Text style={[styles.totalLabel, { color: theme.income }]}>Income</Text>
-            <Text style={[styles.totalValue, { color: theme.income }]}>
-              {formatMoney(selectedDayData.incomeMinor, settings.currencyCode)}
-            </Text>
+        {selectedCurrencyTotals.map((ct) => (
+          <View key={ct.currencyCode} style={styles.currencyGroup}>
+            {selectedCurrencyTotals.length > 1 ? (
+              <Text style={[styles.currencySubLabel, { color: theme.textMuted }]}>
+                {ct.currencyCode}
+              </Text>
+            ) : null}
+            <View style={styles.totalsRow}>
+              <View style={[styles.totalTile, { backgroundColor: theme.incomeSoft }]}>
+                <Text style={[styles.totalLabel, { color: theme.income }]}>Income</Text>
+                <Text
+                  style={[styles.totalValue, { color: theme.income }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit>
+                  {formatMoney(ct.incomeMinor, ct.currencyCode, { catalog: currencies })}
+                </Text>
+              </View>
+              <View style={[styles.totalTile, { backgroundColor: theme.expenseSoft }]}>
+                <Text style={[styles.totalLabel, { color: theme.expense }]}>Expense</Text>
+                <Text
+                  style={[styles.totalValue, { color: theme.expense }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit>
+                  {formatMoney(ct.expenseMinor, ct.currencyCode, { catalog: currencies })}
+                </Text>
+              </View>
+              <View
+                style={[styles.totalTile, { backgroundColor: theme.surfaceElevated }]}>
+                <Text style={[styles.totalLabel, { color: theme.textSecondary }]}>
+                  Net
+                </Text>
+                <Text
+                  style={[
+                    styles.totalValue,
+                    { color: ct.netMinor >= 0 ? theme.income : theme.expense },
+                  ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit>
+                  {formatMoney(ct.netMinor, ct.currencyCode, {
+                    showSign: true,
+                    catalog: currencies,
+                  })}
+                </Text>
+              </View>
+            </View>
           </View>
-          <View style={[styles.totalTile, { backgroundColor: theme.expenseSoft }]}>
-            <Text style={[styles.totalLabel, { color: theme.expense }]}>Expense</Text>
-            <Text style={[styles.totalValue, { color: theme.expense }]}>
-              {formatMoney(selectedDayData.expenseMinor, settings.currencyCode)}
-            </Text>
-          </View>
-          <View style={[styles.totalTile, { backgroundColor: theme.surfaceElevated }]}>
-            <Text style={[styles.totalLabel, { color: theme.textSecondary }]}>Net</Text>
-            <Text
-              style={[
-                styles.totalValue,
-                {
-                  color:
-                    selectedDayData.netMinor >= 0 ? theme.income : theme.expense,
-                },
-              ]}>
-              {formatMoney(selectedDayData.netMinor, settings.currencyCode, {
-                showSign: true,
-              })}
-            </Text>
-          </View>
-        </View>
+        ))}
       </AppCard>
 
-      {selectedDayData.transactions.length === 0 ? (
+      {!selectedDayData || selectedDayData.transactions.length === 0 ? (
         <EmptyState
           icon="calendar-outline"
           title="No transactions on this date"
@@ -290,8 +333,7 @@ export default function CalendarScreen() {
               key={tx.id}
               transaction={tx}
               category={tx.categoryId ? categoryMap.get(tx.categoryId) : undefined}
-              currencyCode={settings.currencyCode}
-              dateFormat={settings.dateFormat}
+              catalog={currencies}
               onPress={() => router.push(`/transactions/${tx.id}`)}
             />
           ))}
@@ -367,10 +409,17 @@ const styles = StyleSheet.create({
   selectedCount: {
     fontSize: 12,
   },
+  currencyGroup: {
+    gap: 4,
+    marginTop: Spacing.one,
+  },
+  currencySubLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
   totalsRow: {
     flexDirection: 'row',
     gap: Spacing.two,
-    marginTop: Spacing.one,
   },
   totalTile: {
     flex: 1,
