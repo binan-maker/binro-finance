@@ -2,15 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import {
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   AppButton,
@@ -18,7 +10,7 @@ import {
   AppHeader,
   AppInput,
   AppScreen,
-  ConfirmDialog,
+  BottomSheetModal,
   SegmentedControl,
   type SegmentOption,
 } from '@/components/common';
@@ -31,6 +23,7 @@ import type { DateFormatPreference, ThemePreference } from '@/types/models';
 import { formatDateForDisplay, getTodayISODate } from '@/utils/date';
 import { formatMinorToMajorInput, formatMoney } from '@/utils/money';
 import { validateNonNegativeAmountInput } from '@/utils/validation';
+import { getProfileInitials, parseAvatarPreset } from '@/app/profile/index';
 
 const THEME_OPTIONS: readonly SegmentOption<ThemePreference>[] = [
   { label: 'System', value: 'system' },
@@ -52,14 +45,11 @@ export default function SettingsScreen() {
   const settings = useAppStore((s) => s.settings);
   const currencies = useAppStore((s) => s.currencies);
   const updateSettings = useAppStore((s) => s.updateSettings);
-  const clearAllLocalData = useAppStore((s) => s.clearAllLocalData);
 
-  const [currencyModalVisible, setCurrencyModalVisible] = useState(false);
   const [openingCurrencyModalVisible, setOpeningCurrencyModalVisible] = useState(false);
   const [dateModalVisible, setDateModalVisible] = useState(false);
   const [balanceModalVisible, setBalanceModalVisible] = useState(false);
   const [privacyModalVisible, setPrivacyModalVisible] = useState(false);
-  const [clearConfirmVisible, setClearConfirmVisible] = useState(false);
 
   const [balanceInput, setBalanceInput] = useState('');
   const [balanceCurrencyInput, setBalanceCurrencyInput] = useState(
@@ -67,13 +57,15 @@ export default function SettingsScreen() {
   );
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [savingBalance, setSavingBalance] = useState(false);
-  const [clearingData, setClearingData] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
 
   const activeCurrency = getCurrencyConfig(settings.currencyCode, currencies);
   const openingCurrency = getCurrencyConfig(balanceCurrencyInput, currencies);
   const appVersion = Constants.expoConfig?.version ?? '1.0.0';
   const todayISO = getTodayISODate();
+
+  const avatarPreset = parseAvatarPreset(settings.profileAvatar);
+  const profileInitials = getProfileInitials(settings.profileName);
 
   const openBalanceEditor = () => {
     const obCurrency = settings.openingBalanceCurrencyCode || settings.currencyCode;
@@ -120,16 +112,6 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleCurrencySelect = async (code: string) => {
-    setStatusError(null);
-    setCurrencyModalVisible(false);
-    try {
-      await updateSettings({ currencyCode: code });
-    } catch {
-      setStatusError('Unable to update currency.');
-    }
-  };
-
   const handleDateFormatSelect = async (format: DateFormatPreference) => {
     setStatusError(null);
     setDateModalVisible(false);
@@ -140,32 +122,51 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleClearAllData = async () => {
-    if (clearingData) return;
-    setClearingData(true);
-    setStatusError(null);
-    try {
-      await clearAllLocalData();
-      setClearConfirmVisible(false);
-      router.replace('/onboarding');
-    } catch {
-      setClearConfirmVisible(false);
-      setStatusError('Could not clear local data. Please try again.');
-    } finally {
-      setClearingData(false);
-    }
-  };
-
   return (
     <AppScreen>
       <AppHeader
         title="Settings"
-        subtitle="Preferences, management, and local data"
+        showBack
+        onBackPress={() => {
+          if (router.canGoBack()) {
+            router.back();
+          } else {
+            router.replace('/(tabs)');
+          }
+        }}
       />
 
       {statusError ? (
         <Text style={[styles.errorBanner, { color: theme.danger }]}>{statusError}</Text>
       ) : null}
+
+      <AppCard>
+        <Pressable
+          onPress={() => router.push('/profile')}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.profileRow, pressed && styles.pressed]}>
+          <View
+            style={[
+              styles.profileAvatar,
+              { backgroundColor: avatarPreset.color },
+            ]}>
+            {avatarPreset.icon ? (
+              <Ionicons name={avatarPreset.icon} size={22} color="#FFFFFF" />
+            ) : (
+              <Text style={styles.profileInitials}>{profileInitials}</Text>
+            )}
+          </View>
+          <View style={styles.profileMeta}>
+            <Text style={[styles.profileName, { color: theme.text }]} numberOfLines={1}>
+              {settings.profileName?.trim() || 'Local Profile'}
+            </Text>
+            <Text style={[styles.profileSub, { color: theme.textSecondary }]} numberOfLines={1}>
+              {settings.profileBio?.trim() || 'Set up local profile'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
+        </Pressable>
+      </AppCard>
 
       <AppCard>
         <Text style={[styles.sectionTitle, { color: theme.text }]}>Preferences</Text>
@@ -185,7 +186,7 @@ export default function SettingsScreen() {
           icon="cash-outline"
           label="Default Currency"
           value={`${activeCurrency.code} (${activeCurrency.symbol})`}
-          onPress={() => setCurrencyModalVisible(true)}
+          onPress={() => router.push('/currency')}
         />
 
         <View style={[styles.divider, { backgroundColor: theme.border }]} />
@@ -244,9 +245,16 @@ export default function SettingsScreen() {
         <View style={[styles.divider, { backgroundColor: theme.border }]} />
         <SettingsRow
           icon="download-outline"
-          label="Export & JSON Backup"
+          label="Backup & Export"
           value="CSV / JSON"
           onPress={() => router.push('/backup')}
+        />
+        <View style={[styles.divider, { backgroundColor: theme.border }]} />
+        <SettingsRow
+          icon="person-circle-outline"
+          label="Account Management"
+          value="Local Device"
+          onPress={() => router.push('/account')}
         />
       </AppCard>
 
@@ -256,7 +264,7 @@ export default function SettingsScreen() {
         <SettingsRow
           icon="shield-checkmark-outline"
           label="Privacy Policy"
-          value="100% Offline"
+          value="Offline"
           onPress={() => setPrivacyModalVisible(true)}
         />
         <View style={[styles.divider, { backgroundColor: theme.border }]} />
@@ -277,27 +285,6 @@ export default function SettingsScreen() {
         </View>
       </AppCard>
 
-      <AppCard>
-        <Text style={[styles.sectionTitle, { color: theme.danger }]}>Danger Zone</Text>
-        <Text style={[styles.dangerHint, { color: theme.textSecondary }]}>
-          Permanently remove all transactions, tags, custom payment methods, custom categories, and reset your opening balance on this device.
-        </Text>
-        <AppButton
-          label="Clear All Local Data"
-          variant="danger"
-          onPress={() => setClearConfirmVisible(true)}
-        />
-      </AppCard>
-
-      {/* Searchable Currency Picker Modal */}
-      <CurrencyPickerModal
-        visible={currencyModalVisible}
-        currencies={currencies}
-        selectedCode={settings.currencyCode}
-        onSelect={(curr) => void handleCurrencySelect(curr.code)}
-        onClose={() => setCurrencyModalVisible(false)}
-      />
-
       <CurrencyPickerModal
         visible={openingCurrencyModalVisible}
         currencies={currencies}
@@ -306,176 +293,141 @@ export default function SettingsScreen() {
         onClose={() => setOpeningCurrencyModalVisible(false)}
       />
 
-      {/* Date Format Modal */}
-      <Modal
+      <BottomSheetModal
         visible={dateModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setDateModalVisible(false)}>
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setDateModalVisible(false)}>
+        onClose={() => setDateModalVisible(false)}>
+        <View style={styles.sheetHeader}>
+          <Text style={[styles.modalTitle, { color: theme.text }]}>
+            Select Date Format
+          </Text>
           <Pressable
-            style={[
-              styles.modalSheet,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-            onPress={(e) => e.stopPropagation()}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>
-              Select Date Format
-            </Text>
-            <View style={styles.modalList}>
-              {DATE_FORMAT_OPTIONS.map((fmt) => {
-                const selected = fmt === settings.dateFormat;
-                return (
-                  <Pressable
-                    key={fmt}
-                    onPress={() => void handleDateFormatSelect(fmt)}
-                    style={[
-                      styles.modalItem,
-                      {
-                        backgroundColor: selected
-                          ? theme.primarySoft
-                          : 'transparent',
-                        borderColor: theme.border,
-                      },
-                    ]}>
-                    <View>
-                      <Text style={[styles.modalItemTitle, { color: theme.text }]}>
-                        {formatDateForDisplay(todayISO, fmt)}
-                      </Text>
-                      <Text style={[styles.modalItemSub, { color: theme.textMuted }]}>
-                        {fmt}
-                      </Text>
-                    </View>
-                    {selected ? (
-                      <Ionicons name="checkmark" size={18} color={theme.primary} />
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </View>
-            <AppButton
-              label="Close"
-              variant="outline"
-              onPress={() => setDateModalVisible(false)}
-            />
+            onPress={() => setDateModalVisible(false)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close date format selector">
+            <Ionicons name="chevron-down" size={22} color={theme.textSecondary} />
           </Pressable>
-        </Pressable>
-      </Modal>
+        </View>
+        <View style={styles.modalList}>
+          {DATE_FORMAT_OPTIONS.map((fmt) => {
+            const selected = fmt === settings.dateFormat;
+            return (
+              <Pressable
+                key={fmt}
+                onPress={() => void handleDateFormatSelect(fmt)}
+                style={[
+                  styles.modalItem,
+                  {
+                    backgroundColor: selected ? theme.primarySoft : 'transparent',
+                    borderColor: theme.border,
+                  },
+                ]}>
+                <View>
+                  <Text style={[styles.modalItemTitle, { color: theme.text }]}>
+                    {formatDateForDisplay(todayISO, fmt)}
+                  </Text>
+                  <Text style={[styles.modalItemSub, { color: theme.textMuted }]}>
+                    {fmt}
+                  </Text>
+                </View>
+                {selected ? (
+                  <Ionicons name="checkmark" size={18} color={theme.primary} />
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </View>
+      </BottomSheetModal>
 
-      {/* Opening Balance Modal */}
-      <Modal
+      <BottomSheetModal
         visible={balanceModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setBalanceModalVisible(false)}>
-        <KeyboardAvoidingView
-          style={styles.centerBackdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        onClose={() => setBalanceModalVisible(false)}
+        variant="center"
+        keyboardAvoiding>
+        <View style={styles.sheetHeader}>
+          <Text style={[styles.modalTitle, { color: theme.text }]}>
+            Edit Opening Balance
+          </Text>
           <Pressable
-            style={[
-              styles.dialogCard,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-            onPress={(e) => e.stopPropagation()}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>
-              Edit Opening Balance
-            </Text>
-            <Text style={[styles.dangerHint, { color: theme.textSecondary }]}>
-              Opening balance stays linked to its own currency so changing your default currency never mutates past amounts.
-            </Text>
-
-            <Pressable
-              onPress={() => setOpeningCurrencyModalVisible(true)}
-              style={[
-                styles.currencyPickButton,
-                { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
-              ]}>
-              <Text style={[styles.rowTitle, { color: theme.text }]}>
-                Currency: {openingCurrency.code} ({openingCurrency.symbol})
-              </Text>
-              <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
-            </Pressable>
-
-            <AppInput
-              label="Opening Balance"
-              prefix={openingCurrency.symbol}
-              value={balanceInput}
-              onChangeText={(text) => {
-                setBalanceInput(text);
-                if (balanceError) setBalanceError(null);
-              }}
-              keyboardType={
-                openingCurrency.minorUnits === 0 ? 'number-pad' : 'decimal-pad'
-              }
-              error={balanceError}
-            />
-            <View style={styles.dialogButtons}>
-              <View style={styles.flex1}>
-                <AppButton
-                  label="Cancel"
-                  variant="outline"
-                  onPress={() => setBalanceModalVisible(false)}
-                  disabled={savingBalance}
-                  fullWidth
-                />
-              </View>
-              <View style={styles.flex1}>
-                <AppButton
-                  label="Save"
-                  onPress={() => void handleSaveOpeningBalance()}
-                  loading={savingBalance}
-                  fullWidth
-                />
-              </View>
-            </View>
+            onPress={() => setBalanceModalVisible(false)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close opening balance editor">
+            <Ionicons name="chevron-down" size={22} color={theme.textSecondary} />
           </Pressable>
-        </KeyboardAvoidingView>
-      </Modal>
+        </View>
 
-      {/* Privacy Policy Modal */}
-      <Modal
-        visible={privacyModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPrivacyModalVisible(false)}>
         <Pressable
-          style={styles.centerBackdrop}
-          onPress={() => setPrivacyModalVisible(false)}>
-          <Pressable
-            style={[
-              styles.dialogCard,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-            onPress={(e) => e.stopPropagation()}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>
-              Privacy Policy
-            </Text>
-            <Text style={[styles.dangerHint, { color: theme.textSecondary }]}>
-              BinRo Finance stores all your financial records locally on this device using SQLite. Your transactions, balances, tags, and categories never leave your device unless you explicitly export a backup file.
-            </Text>
+          onPress={() => setOpeningCurrencyModalVisible(true)}
+          style={[
+            styles.currencyPickButton,
+            { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
+          ]}>
+          <Text style={[styles.rowTitle, { color: theme.text }]}>
+            Currency: {openingCurrency.code} ({openingCurrency.symbol})
+          </Text>
+          <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
+        </Pressable>
+
+        <AppInput
+          label="Opening Balance"
+          prefix={openingCurrency.symbol}
+          value={balanceInput}
+          onChangeText={(text) => {
+            setBalanceInput(text);
+            if (balanceError) setBalanceError(null);
+          }}
+          keyboardType={
+            openingCurrency.minorUnits === 0 ? 'number-pad' : 'decimal-pad'
+          }
+          error={balanceError}
+        />
+        <View style={styles.dialogButtons}>
+          <View style={styles.flex1}>
             <AppButton
-              label="Done"
-              onPress={() => setPrivacyModalVisible(false)}
+              label="Cancel"
+              variant="outline"
+              onPress={() => setBalanceModalVisible(false)}
+              disabled={savingBalance}
               fullWidth
             />
-          </Pressable>
-        </Pressable>
-      </Modal>
+          </View>
+          <View style={styles.flex1}>
+            <AppButton
+              label="Save"
+              onPress={() => void handleSaveOpeningBalance()}
+              loading={savingBalance}
+              fullWidth
+            />
+          </View>
+        </View>
+      </BottomSheetModal>
 
-      {/* Clear All Confirmation */}
-      <ConfirmDialog
-        visible={clearConfirmVisible}
-        title="Clear All Local Data?"
-        message="This will permanently delete every transaction, tag, custom payment method, and custom category stored on this device. This action cannot be undone."
-        confirmLabel="Clear All Data"
-        cancelLabel="Cancel"
-        destructive
-        loading={clearingData}
-        onConfirm={() => void handleClearAllData()}
-        onCancel={() => setClearConfirmVisible(false)}
-      />
+      <BottomSheetModal
+        visible={privacyModalVisible}
+        onClose={() => setPrivacyModalVisible(false)}
+        variant="center">
+        <View style={styles.sheetHeader}>
+          <Text style={[styles.modalTitle, { color: theme.text }]}>
+            Privacy Policy
+          </Text>
+          <Pressable
+            onPress={() => setPrivacyModalVisible(false)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close privacy policy">
+            <Ionicons name="chevron-down" size={22} color={theme.textSecondary} />
+          </Pressable>
+        </View>
+        <Text style={[styles.privacyText, { color: theme.textSecondary }]}>
+          BinRo Finance stores all financial records locally on this device using SQLite. Your data stays on your device unless you export a backup file.
+        </Text>
+        <AppButton
+          label="Done"
+          onPress={() => setPrivacyModalVisible(false)}
+          fullWidth
+        />
+      </BottomSheetModal>
     </AppScreen>
   );
 }
@@ -510,6 +462,34 @@ function SettingsRow({ icon, label, value, onPress }: SettingsRowProps) {
 }
 
 const styles = StyleSheet.create({
+  profileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
+  profileAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileInitials: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  profileMeta: {
+    flex: 1,
+    gap: 2,
+  },
+  profileName: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  profileSub: {
+    fontSize: 13,
+  },
   sectionTitle: {
     fontSize: 15,
     fontWeight: '700',
@@ -552,10 +532,6 @@ const styles = StyleSheet.create({
     height: 1,
     width: '100%',
   },
-  dangerHint: {
-    fontSize: 13,
-    lineHeight: 19,
-  },
   errorBanner: {
     fontSize: 13,
     fontWeight: '600',
@@ -563,33 +539,10 @@ const styles = StyleSheet.create({
   pressed: {
     opacity: 0.7,
   },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'flex-end',
-  },
-  centerBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'center',
+  sheetHeader: {
+    flexDirection: 'row',
     alignItems: 'center',
-    padding: Spacing.four,
-  },
-  modalSheet: {
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    borderWidth: 1,
-    padding: Spacing.four,
-    gap: Spacing.three,
-    maxHeight: '75%',
-  },
-  dialogCard: {
-    width: '100%',
-    maxWidth: 400,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    padding: Spacing.four,
-    gap: Spacing.three,
+    justifyContent: 'space-between',
   },
   currencyPickButton: {
     flexDirection: 'row',
@@ -605,7 +558,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   modalList: {
-    maxHeight: 340,
+    gap: Spacing.one,
   },
   modalItem: {
     flexDirection: 'row',
@@ -623,6 +576,10 @@ const styles = StyleSheet.create({
   modalItemSub: {
     fontSize: 12,
     marginTop: 2,
+  },
+  privacyText: {
+    fontSize: 14,
+    lineHeight: 20,
   },
   dialogButtons: {
     flexDirection: 'row',

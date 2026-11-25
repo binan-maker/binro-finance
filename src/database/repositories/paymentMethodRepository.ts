@@ -117,4 +117,16 @@ export class SQLitePaymentMethodRepository implements IPaymentMethodRepository {
     }
     return updated;
   }
+
+  async delete(id: string): Promise<void> {
+    const existing = await this.getById(id);
+    if (!existing) {
+      throw new Error('Payment method not found.');
+    }
+    if (existing.isBuiltin) {
+      throw new Error('Built-in payment methods cannot be deleted.');
+    }
+    const db = await this.getDb();
+    await db.runAsync('DELETE FROM payment_methods WHERE id = ?', id);
+  }
 }

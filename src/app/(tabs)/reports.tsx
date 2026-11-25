@@ -1,54 +1,67 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 
 import {
-  AppButton,
   AppCard,
   AppHeader,
   AppScreen,
+  BottomSheetModal,
+  CategoryIcon,
   EmptyState,
   SegmentedControl,
   type SegmentOption,
 } from '@/components/common';
-import { DatePickerField } from '@/components/forms/DatePickerField';
+import { DateRangePicker } from '@/components/forms/DateRangePicker';
 import {
   CategoryDonutChart,
-  DailySpendingTrendChart,
-  IncomeExpenseBarChart,
+  DynamicSpendingTrendChart,
+  IncomeExpenseComparisonChart,
 } from '@/components/reports/Charts';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
-  calculatePeriodSummary,
+  buildReportAnalytics,
   getDistinctTransactionCurrencies,
 } from '@/services/calculations/financialCalculations';
 import { useAppStore } from '@/store/app-store';
-import type { ReportPeriod } from '@/types/reports';
+import type { ReportGranularity, ReportPeriodPreset } from '@/types/reports';
 import {
   addDaysToISODate,
   formatDateForDisplay,
-  getMonthLabel,
-  getMonthRange,
   getTodayISODate,
-  getWeekRange,
-  getYearRange,
-  parseISODateParts,
+  resolveDatePresetRange,
 } from '@/utils/date';
 import { formatMoney } from '@/utils/money';
 
-const PERIOD_OPTIONS: readonly SegmentOption<ReportPeriod>[] = [
-  { label: 'Day', value: 'daily' },
-  { label: 'Week', value: 'weekly' },
-  { label: 'Month', value: 'monthly' },
-  { label: 'Year', value: 'yearly' },
-  { label: 'Custom', value: 'custom' },
+const PERIOD_PRESETS: readonly { value: ReportPeriodPreset; label: string }[] = [
+  { value: 'today', label: 'Today' },
+  { value: 'last_7', label: 'Last 7 Days' },
+  { value: 'last_30', label: 'Last 30 Days' },
+  { value: 'this_month', label: 'This Month' },
+  { value: 'this_year', label: 'This Year' },
+  { value: 'all_time', label: 'All Time' },
+  { value: 'custom', label: 'Custom' },
+];
+
+const GRANULARITY_OPTIONS: readonly SegmentOption<ReportGranularity>[] = [
+  { label: 'Daily', value: 'daily' },
+  { label: 'Weekly', value: 'weekly' },
+  { label: 'Monthly', value: 'monthly' },
 ];
 
 export default function ReportsScreen() {
   const theme = useTheme();
   const router = useRouter();
+  const { width } = useWindowDimensions();
 
   const settings = useAppStore((s) => s.settings);
   const categories = useAppStore((s) => s.categories);
@@ -56,11 +69,17 @@ export default function ReportsScreen() {
   const transactions = useAppStore((s) => s.transactions);
 
   const today = getTodayISODate();
-  const [period, setPeriod] = useState<ReportPeriod>('monthly');
-  const [anchorDate, setAnchorDate] = useState(today);
+  const [periodPreset, setPeriodPreset] = useState<ReportPeriodPreset>('this_month');
   const [customStart, setCustomStart] = useState(addDaysToISODate(today, -29));
   const [customEnd, setCustomEnd] = useState(today);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
+  const [periodPickerVisible, setPeriodPickerVisible] = useState(false);
+  const [granularity, setGranularity] = useState<ReportGranularity>('daily');
   const [selectedCurrency, setSelectedCurrency] = useState<string | null>(null);
+  const [breakdownExpanded, setBreakdownExpanded] = useState(false);
+
+  const isCompact = width < 360;
 
   const availableCurrencies = useMemo(
     () =>
@@ -77,98 +96,101 @@ export default function ReportsScreen() {
       ? selectedCurrency
       : settings.currencyCode;
 
-  const { startDate, endDate, rangeTitle } = useMemo(() => {
-    const parts = parseISODateParts(anchorDate);
-    switch (period) {
-      case 'daily':
-        return {
-          startDate: anchorDate,
-          endDate: anchorDate,
-          rangeTitle: formatDateForDisplay(anchorDate, settings.dateFormat),
-        };
-      case 'weekly': {
-        const range = getWeekRange(anchorDate);
-        return {
-          ...range,
-          rangeTitle: `${formatDateForDisplay(range.startDate, settings.dateFormat)} – ${formatDateForDisplay(range.endDate, settings.dateFormat)}`,
-        };
-      }
-      case 'monthly': {
-        const range = getMonthRange(parts.year, parts.month);
-        return {
-          ...range,
-          rangeTitle: getMonthLabel(parts.year, parts.month),
-        };
-      }
-      case 'yearly': {
-        const range = getYearRange(parts.year);
-        return {
-          ...range,
-          rangeTitle: String(parts.year),
-        };
-      }
-      case 'custom':
-      default: {
-        const start = customStart <= customEnd ? customStart : customEnd;
-        const end = customStart <= customEnd ? customEnd : customStart;
-        return {
-          startDate: start,
-          endDate: end,
-          rangeTitle: `${formatDateForDisplay(start, settings.dateFormat)} – ${formatDateForDisplay(end, settings.dateFormat)}`,
-        };
+  const earliestTxDate = useMemo(() => {
+    let min = today;
+    for (const tx of transactions) {
+      if (tx.currencyCode.toUpperCase() === activeCurrencyCode.toUpperCase()) {
+        if (tx.transactionDate < min) min = tx.transactionDate;
       }
     }
-  }, [period, anchorDate, customStart, customEnd, settings.dateFormat]);
+    return min;
+  }, [transactions, activeCurrencyCode, today]);
 
-  const stepPeriod = (delta: number) => {
-    const parts = parseISODateParts(anchorDate);
-    if (period === 'daily') {
-      setAnchorDate(addDaysToISODate(anchorDate, delta));
-    } else if (period === 'weekly') {
-      setAnchorDate(addDaysToISODate(anchorDate, delta * 7));
-    } else if (period === 'monthly') {
-      let nextMonth = parts.month + delta;
-      let nextYear = parts.year;
-      if (nextMonth < 1) {
-        nextMonth = 12;
-        nextYear -= 1;
-      } else if (nextMonth > 12) {
-        nextMonth = 1;
-        nextYear += 1;
-      }
-      setAnchorDate(
-        `${String(nextYear).padStart(4, '0')}-${String(nextMonth).padStart(2, '0')}-01`,
-      );
-    } else if (period === 'yearly') {
-      const nextYear = parts.year + delta;
-      setAnchorDate(`${String(nextYear).padStart(4, '0')}-01-01`);
-    }
-  };
+  const { startDate, endDate } = useMemo(() => {
+    const resolved = resolveDatePresetRange({
+      preset: periodPreset,
+      referenceToday: today,
+      customStartDate: customStart,
+      customEndDate: customEnd,
+      earliestTransactionDate: earliestTxDate,
+    });
+    return {
+      startDate: resolved.startDate ?? today,
+      endDate: resolved.endDate ?? today,
+    };
+  }, [periodPreset, today, customStart, customEnd, earliestTxDate]);
 
-  const summary = useMemo(
+  const analytics = useMemo(
     () =>
-      calculatePeriodSummary({
+      buildReportAnalytics({
         transactions,
         categories,
         currencyCode: activeCurrencyCode,
         startDate,
         endDate,
+        categoryId: selectedCategoryId,
+        granularity,
       }),
-    [transactions, categories, activeCurrencyCode, startDate, endDate],
+    [
+      transactions,
+      categories,
+      activeCurrencyCode,
+      startDate,
+      endDate,
+      selectedCategoryId,
+      granularity,
+    ],
   );
+
+  const selectedCategory = useMemo(
+    () =>
+      selectedCategoryId
+        ? categories.find((c) => c.id === selectedCategoryId) ?? null
+        : null,
+    [categories, selectedCategoryId],
+  );
+
+  const orderedCategories = useMemo(
+    () =>
+      [...categories].sort((a, b) => {
+        if (a.isArchived !== b.isArchived) return a.isArchived ? 1 : -1;
+        return a.name.localeCompare(b.name);
+      }),
+    [categories],
+  );
+
+  const visibleBreakdown = breakdownExpanded
+    ? analytics.categoryBreakdown
+    : analytics.categoryBreakdown.slice(0, 5);
+
+  const activePeriodLabel =
+    PERIOD_PRESETS.find((p) => p.value === periodPreset)?.label ?? 'This Month';
 
   return (
     <AppScreen>
       <AppHeader
         title="Reports"
-        subtitle={`Analytics (${activeCurrencyCode})`}
+        leftAction={
+          <View
+            style={[
+              styles.headerBadge,
+              { backgroundColor: theme.primarySoft, borderColor: theme.border },
+            ]}>
+            <Ionicons name="stats-chart" size={17} color={theme.primary} />
+          </View>
+        }
         rightAction={
-          <AppButton
-            label="Calendar"
-            variant="outline"
-            size="sm"
+          <Pressable
             onPress={() => router.push('/calendar')}
-          />
+            accessibilityRole="button"
+            accessibilityLabel="Open Calendar"
+            style={({ pressed }) => [
+              styles.headerIconBtn,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+              pressed && styles.pressed,
+            ]}>
+            <Ionicons name="calendar-outline" size={18} color={theme.text} />
+          </Pressable>
         }
       />
 
@@ -176,7 +198,7 @@ export default function ReportsScreen() {
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.currencyTabs}>
+          contentContainerStyle={styles.horizontalRow}>
           {availableCurrencies.map((code) => {
             const selected = code === activeCurrencyCode;
             return (
@@ -184,16 +206,16 @@ export default function ReportsScreen() {
                 key={code}
                 onPress={() => setSelectedCurrency(code)}
                 style={[
-                  styles.currencyTab,
+                  styles.chip,
                   {
-                    backgroundColor: selected ? theme.primarySoft : theme.surface,
+                    backgroundColor: selected ? theme.primary : theme.surface,
                     borderColor: selected ? theme.primary : theme.border,
                   },
                 ]}>
                 <Text
                   style={[
-                    styles.currencyTabText,
-                    { color: selected ? theme.primary : theme.textSecondary },
+                    styles.chipText,
+                    { color: selected ? theme.primaryText : theme.text },
                   ]}>
                   {code}
                 </Text>
@@ -203,178 +225,474 @@ export default function ReportsScreen() {
         </ScrollView>
       ) : null}
 
-      <SegmentedControl
-        options={PERIOD_OPTIONS}
-        value={period}
-        onChange={setPeriod}
-      />
-
-      {period === 'custom' ? (
-        <AppCard>
-          <View style={styles.customRangeRow}>
-            <View style={styles.flex1}>
-              <DatePickerField
-                label="From"
-                value={customStart}
-                dateFormat={settings.dateFormat}
-                onChange={setCustomStart}
-              />
-            </View>
-            <View style={styles.flex1}>
-              <DatePickerField
-                label="To"
-                value={customEnd}
-                dateFormat={settings.dateFormat}
-                onChange={setCustomEnd}
-              />
-            </View>
-          </View>
-        </AppCard>
-      ) : (
-        <AppCard>
-          <View style={styles.navigatorRow}>
-            <Pressable
-              onPress={() => stepPeriod(-1)}
-              accessibilityRole="button"
-              style={[styles.navBtn, { borderColor: theme.border }]}>
-              <Ionicons name="chevron-back" size={18} color={theme.text} />
-            </Pressable>
-            <Text style={[styles.rangeTitle, { color: theme.text }]} numberOfLines={1}>
-              {rangeTitle}
+      {/* Main Report Card */}
+      <AppCard>
+        <View style={styles.selectorRow}>
+          <Pressable
+            onPress={() => setPeriodPickerVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`Period: ${activePeriodLabel}`}
+            style={({ pressed }) => [
+              styles.selectorTrigger,
+              { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
+              pressed && styles.pressed,
+            ]}>
+            <Ionicons name="time-outline" size={15} color={theme.primary} />
+            <Text style={[styles.selectorText, { color: theme.text }]} numberOfLines={1}>
+              {activePeriodLabel}
             </Text>
-            <Pressable
-              onPress={() => stepPeriod(1)}
-              accessibilityRole="button"
-              style={[styles.navBtn, { borderColor: theme.border }]}>
-              <Ionicons name="chevron-forward" size={18} color={theme.text} />
-            </Pressable>
-          </View>
-        </AppCard>
-      )}
+            <Ionicons name="chevron-down" size={15} color={theme.textSecondary} />
+          </Pressable>
 
-      {summary.transactionCount === 0 ? (
-        <EmptyState
-          icon="bar-chart-outline"
-          title={`No ${activeCurrencyCode} transactions in this period`}
-          description="Try switching currency, choosing another date range, or recording a transaction."
-          actionLabel="Add Transaction"
-          onAction={() => router.push('/transactions/add')}
-        />
-      ) : (
-        <>
-          <AppCard>
-            <View style={styles.kpiGrid}>
-              <View style={[styles.kpiTile, { backgroundColor: theme.incomeSoft }]}>
-                <Text style={[styles.kpiLabel, { color: theme.income }]}>
-                  Total Income
+          <Pressable
+            onPress={() => setCategoryPickerVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Filter report by category"
+            style={({ pressed }) => [
+              styles.selectorTrigger,
+              {
+                backgroundColor: selectedCategory
+                  ? theme.primarySoft
+                  : theme.surfaceElevated,
+                borderColor: selectedCategory ? theme.primary : theme.border,
+              },
+              pressed && styles.pressed,
+            ]}>
+            {selectedCategory ? (
+              <View
+                style={[styles.catDot, { backgroundColor: selectedCategory.color }]}
+              />
+            ) : (
+              <Ionicons name="pricetag-outline" size={15} color={theme.textSecondary} />
+            )}
+            <Text
+              style={[
+                styles.selectorText,
+                { color: selectedCategory ? theme.primary : theme.text },
+              ]}
+              numberOfLines={1}>
+              {selectedCategory ? selectedCategory.name : 'All Categories'}
+            </Text>
+            <Ionicons
+              name="chevron-down"
+              size={15}
+              color={selectedCategory ? theme.primary : theme.textSecondary}
+            />
+          </Pressable>
+        </View>
+
+        {periodPreset === 'custom' ? (
+          <View style={styles.customRangeWrap}>
+            <DateRangePicker
+              startDate={customStart}
+              endDate={customEnd}
+              dateFormat={settings.dateFormat}
+              onChange={({ startDate: s, endDate: e }) => {
+                setCustomStart(s);
+                setCustomEnd(e);
+              }}
+            />
+          </View>
+        ) : null}
+
+        {analytics.transactionCount > 0 ? (
+          <>
+            <View style={[styles.summaryDividerH, { backgroundColor: theme.border }]} />
+            <View style={styles.summaryRow}>
+              <View style={styles.summaryTile}>
+                <Text style={[styles.summaryLabel, { color: theme.textSecondary }]}>
+                  Income
                 </Text>
                 <Text
-                  style={[styles.kpiValue, { color: theme.income }]}
+                  style={[
+                    styles.summaryValue,
+                    { color: theme.income, fontSize: isCompact ? 15 : 17 },
+                  ]}
                   numberOfLines={1}
-                  adjustsFontSizeToFit>
-                  {formatMoney(summary.totalIncomeMinor, activeCurrencyCode, {
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}>
+                  {formatMoney(analytics.totalIncomeMinor, activeCurrencyCode, {
                     catalog: currencies,
                   })}
                 </Text>
               </View>
-              <View style={[styles.kpiTile, { backgroundColor: theme.expenseSoft }]}>
-                <Text style={[styles.kpiLabel, { color: theme.expense }]}>
-                  Total Expenses
+
+              <View style={[styles.summaryDivider, { backgroundColor: theme.border }]} />
+
+              <View style={styles.summaryTile}>
+                <Text style={[styles.summaryLabel, { color: theme.textSecondary }]}>
+                  Expenses
                 </Text>
                 <Text
-                  style={[styles.kpiValue, { color: theme.expense }]}
+                  style={[
+                    styles.summaryValue,
+                    { color: theme.expense, fontSize: isCompact ? 15 : 17 },
+                  ]}
                   numberOfLines={1}
-                  adjustsFontSizeToFit>
-                  {formatMoney(summary.totalExpensesMinor, activeCurrencyCode, {
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}>
+                  {formatMoney(analytics.totalExpensesMinor, activeCurrencyCode, {
+                    catalog: currencies,
+                  })}
+                </Text>
+              </View>
+
+              <View style={[styles.summaryDivider, { backgroundColor: theme.border }]} />
+
+              <View style={styles.summaryTile}>
+                <Text style={[styles.summaryLabel, { color: theme.textSecondary }]}>
+                  Balance
+                </Text>
+                <Text
+                  style={[
+                    styles.summaryValue,
+                    {
+                      color:
+                        analytics.netMovementMinor >= 0
+                          ? theme.income
+                          : theme.expense,
+                      fontSize: isCompact ? 15 : 17,
+                    },
+                  ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}>
+                  {formatMoney(analytics.netMovementMinor, activeCurrencyCode, {
+                    showSign: true,
                     catalog: currencies,
                   })}
                 </Text>
               </View>
             </View>
 
-            <View style={styles.metricsList}>
-              <MetricRow
-                label="Net Financial Movement"
-                value={formatMoney(summary.netMovementMinor, activeCurrencyCode, {
-                  showSign: true,
-                  catalog: currencies,
-                })}
-                valueColor={
-                  summary.netMovementMinor >= 0 ? theme.income : theme.expense
-                }
-              />
-              <View style={[styles.divider, { backgroundColor: theme.border }]} />
-              <MetricRow
-                label="Average Daily Expenses"
-                value={formatMoney(
-                  summary.averageDailyExpenseMinor,
-                  activeCurrencyCode,
-                  { catalog: currencies },
-                )}
-              />
-              <View style={[styles.divider, { backgroundColor: theme.border }]} />
-              <MetricRow
-                label="Highest Spending Category"
-                value={
-                  summary.highestSpendingCategory
-                    ? `${summary.highestSpendingCategory.categoryName} (${formatMoney(summary.highestSpendingCategory.totalMinor, activeCurrencyCode, { catalog: currencies })})`
-                    : 'None'
-                }
-              />
-              <View style={[styles.divider, { backgroundColor: theme.border }]} />
-              <MetricRow
-                label="Highest Spending Day"
-                value={
-                  summary.highestSpendingDay
-                    ? `${formatDateForDisplay(summary.highestSpendingDay.date, settings.dateFormat)} (${formatMoney(summary.highestSpendingDay.amountMinor, activeCurrencyCode, { catalog: currencies })})`
-                    : 'None'
-                }
-              />
-            </View>
-          </AppCard>
+            <View style={[styles.summaryDividerH, { backgroundColor: theme.border }]} />
 
-          <AppCard>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>
-              Income vs Expenses
-            </Text>
-            <IncomeExpenseBarChart
-              incomeMinor={summary.totalIncomeMinor}
-              expenseMinor={summary.totalExpensesMinor}
+            <IncomeExpenseComparisonChart
+              buckets={analytics.comparisonBuckets}
               currencyCode={activeCurrencyCode}
               catalog={currencies}
             />
-          </AppCard>
+          </>
+        ) : null}
+      </AppCard>
+
+      {analytics.transactionCount === 0 ? (
+        <EmptyState
+          icon="bar-chart-outline"
+          title="No transactions in this report"
+          description={
+            selectedCategory
+              ? `No ${activeCurrencyCode} records found for ${selectedCategory.name} in this period.`
+              : `No ${activeCurrencyCode} records found in this date range.`
+          }
+          actionLabel={selectedCategory ? 'Show All Categories' : 'Add Transaction'}
+          onAction={() => {
+            if (selectedCategory) {
+              setSelectedCategoryId(null);
+            } else {
+              router.push('/transactions/add');
+            }
+          }}
+        />
+      ) : (
+        <>
+          <SegmentedControl
+            options={GRANULARITY_OPTIONS}
+            value={granularity}
+            onChange={setGranularity}
+          />
 
           <AppCard>
             <Text style={[styles.sectionTitle, { color: theme.text }]}>
               Spending Trend
             </Text>
-            <DailySpendingTrendChart
-              dailyTotals={summary.dailyTotals}
+            <DynamicSpendingTrendChart
+              trend={analytics.spendingTrend}
               currencyCode={activeCurrencyCode}
               catalog={currencies}
             />
           </AppCard>
 
           <AppCard>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>
-              Category Spending Breakdown
-            </Text>
+            <View style={styles.sectionHeaderRow}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>
+                Category Breakdown
+              </Text>
+              {analytics.categoryBreakdown.length > 5 ? (
+                <Pressable
+                  onPress={() => setBreakdownExpanded((v) => !v)}
+                  hitSlop={8}
+                  accessibilityRole="button">
+                  <Text style={[styles.seeAllText, { color: theme.primary }]}>
+                    {breakdownExpanded ? 'Show Less' : 'See All'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+
             <CategoryDonutChart
-              items={summary.categoryBreakdown}
-              totalMinor={summary.totalExpensesMinor}
+              items={analytics.categoryBreakdown}
+              totalMinor={analytics.totalExpensesMinor}
               currencyCode={activeCurrencyCode}
               catalog={currencies}
-              maxLegendItems={12}
+              hideLegend
             />
+
+            {analytics.categoryBreakdown.length > 0 ? (
+              <View style={styles.rankedList}>
+                {visibleBreakdown.map((item) => {
+                  const isCurrentCategory =
+                    Boolean(item.categoryId) && item.categoryId === selectedCategoryId;
+                  return (
+                    <Pressable
+                      key={item.categoryId ?? item.categoryName}
+                      onPress={() => {
+                        if (item.categoryId) {
+                          setSelectedCategoryId((prev) =>
+                            prev === item.categoryId ? null : item.categoryId,
+                          );
+                        }
+                      }}
+                      style={({ pressed }) => [
+                        styles.rankedRow,
+                        isCurrentCategory && {
+                          backgroundColor: theme.primarySoft,
+                          borderRadius: Radius.md,
+                        },
+                        pressed && styles.pressed,
+                      ]}>
+                      <CategoryIcon
+                        icon={item.icon}
+                        color={item.color}
+                        size={34}
+                      />
+                      <View style={styles.rankedNameWrap}>
+                        <Text
+                          style={[styles.rankedName, { color: theme.text }]}
+                          numberOfLines={1}>
+                          {item.categoryName}
+                        </Text>
+                        <Text
+                          style={[styles.rankedSub, { color: theme.textSecondary }]}>
+                          {item.transactionCount}{' '}
+                          {item.transactionCount === 1 ? 'expense' : 'expenses'}
+                        </Text>
+                      </View>
+                      <View style={styles.rankedRight}>
+                        <Text style={[styles.rankedAmt, { color: theme.text }]}>
+                          {formatMoney(item.totalMinor, activeCurrencyCode, {
+                            catalog: currencies,
+                          })}
+                        </Text>
+                        <Text
+                          style={[styles.rankedPct, { color: theme.textSecondary }]}>
+                          {item.percentage.toFixed(1)}%
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
+          </AppCard>
+
+          <AppCard>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>Insights</Text>
+            <View style={styles.insightsList}>
+              {analytics.highestSpendingCategory ? (
+                <>
+                  <InsightRow
+                    label="Category"
+                    value={`${analytics.highestSpendingCategory.categoryName} (${formatMoney(analytics.highestSpendingCategory.totalMinor, activeCurrencyCode, { catalog: currencies })})`}
+                  />
+                  <View style={[styles.divider, { backgroundColor: theme.border }]} />
+                </>
+              ) : null}
+
+              {analytics.highestSpendingDay ? (
+                <>
+                  <InsightRow
+                    label="Highest"
+                    value={`${formatDateForDisplay(analytics.highestSpendingDay.date, settings.dateFormat)} (${formatMoney(analytics.highestSpendingDay.amountMinor, activeCurrencyCode, { catalog: currencies })})`}
+                  />
+                  <View style={[styles.divider, { backgroundColor: theme.border }]} />
+                </>
+              ) : null}
+
+              <InsightRow
+                label="Average"
+                value={formatMoney(
+                  analytics.averageDailyExpenseMinor,
+                  activeCurrencyCode,
+                  { catalog: currencies },
+                )}
+              />
+              <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+              <InsightRow
+                label="Activity"
+                value={`${analytics.incomeTransactionCount} income · ${analytics.expenseTransactionCount} expense`}
+              />
+
+              {analytics.largestExpenseTransaction ? (
+                <>
+                  <View style={[styles.divider, { backgroundColor: theme.border }]} />
+                  <InsightRow
+                    label="Largest"
+                    value={`${analytics.largestExpenseTransaction.title} (${formatMoney(analytics.largestExpenseTransaction.amountMinor, activeCurrencyCode, { catalog: currencies })})`}
+                  />
+                </>
+              ) : null}
+
+              <View style={[styles.divider, { backgroundColor: theme.border }]} />
+              <InsightRow
+                label="Balance"
+                value={formatMoney(analytics.netMovementMinor, activeCurrencyCode, {
+                  showSign: true,
+                  catalog: currencies,
+                })}
+                valueColor={
+                  analytics.netMovementMinor >= 0 ? theme.income : theme.expense
+                }
+              />
+            </View>
           </AppCard>
         </>
       )}
+
+      {/* Period Picker Bottom Sheet */}
+      <BottomSheetModal
+        visible={periodPickerVisible}
+        onClose={() => setPeriodPickerVisible(false)}>
+        <View style={styles.modalHeader}>
+          <Text style={[styles.modalTitle, { color: theme.text }]}>Select Period</Text>
+          <Pressable
+            onPress={() => setPeriodPickerVisible(false)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close period selector">
+            <Ionicons name="chevron-down" size={22} color={theme.textSecondary} />
+          </Pressable>
+        </View>
+
+        <View style={styles.sheetList}>
+          {PERIOD_PRESETS.map((opt) => {
+            const selected = opt.value === periodPreset;
+            return (
+              <Pressable
+                key={opt.value}
+                onPress={() => {
+                  setPeriodPreset(opt.value);
+                  setPeriodPickerVisible(false);
+                }}
+                style={[
+                  styles.catOptionRow,
+                  {
+                    backgroundColor: selected ? theme.primarySoft : 'transparent',
+                    borderColor: selected ? theme.primary : theme.border,
+                  },
+                ]}>
+                <Text
+                  style={[
+                    styles.catOptionText,
+                    { color: selected ? theme.primary : theme.text },
+                  ]}>
+                  {opt.label}
+                </Text>
+                {selected ? (
+                  <Ionicons name="checkmark" size={18} color={theme.primary} />
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </View>
+      </BottomSheetModal>
+
+      {/* Category Filter Bottom Sheet */}
+      <BottomSheetModal
+        visible={categoryPickerVisible}
+        onClose={() => setCategoryPickerVisible(false)}>
+        <View style={styles.modalHeader}>
+          <Text style={[styles.modalTitle, { color: theme.text }]}>
+            Filter by Category
+          </Text>
+          <Pressable
+            onPress={() => setCategoryPickerVisible(false)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close category selector">
+            <Ionicons name="chevron-down" size={22} color={theme.textSecondary} />
+          </Pressable>
+        </View>
+
+        <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+          <Pressable
+            onPress={() => {
+              setSelectedCategoryId(null);
+              setCategoryPickerVisible(false);
+            }}
+            style={[
+              styles.catOptionRow,
+              {
+                backgroundColor:
+                  selectedCategoryId === null ? theme.primarySoft : 'transparent',
+                borderColor:
+                  selectedCategoryId === null ? theme.primary : theme.border,
+              },
+            ]}>
+            <Text
+              style={[
+                styles.catOptionText,
+                {
+                  color: selectedCategoryId === null ? theme.primary : theme.text,
+                },
+              ]}>
+              All Categories
+            </Text>
+            {selectedCategoryId === null ? (
+              <Ionicons name="checkmark" size={18} color={theme.primary} />
+            ) : null}
+          </Pressable>
+
+          {orderedCategories.map((cat) => {
+            const selected = cat.id === selectedCategoryId;
+            return (
+              <Pressable
+                key={cat.id}
+                onPress={() => {
+                  setSelectedCategoryId(cat.id);
+                  setCategoryPickerVisible(false);
+                }}
+                style={[
+                  styles.catOptionRow,
+                  {
+                    backgroundColor: selected ? theme.primarySoft : 'transparent',
+                    borderColor: selected ? theme.primary : theme.border,
+                  },
+                ]}>
+                <View style={styles.catOptionLeft}>
+                  <CategoryIcon icon={cat.icon} color={cat.color} size={30} />
+                  <Text
+                    style={[
+                      styles.catOptionText,
+                      { color: selected ? theme.primary : theme.text },
+                    ]}>
+                    {cat.name}
+                  </Text>
+                </View>
+                {selected ? (
+                  <Ionicons name="checkmark" size={18} color={theme.primary} />
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </BottomSheetModal>
     </AppScreen>
   );
 }
 
-function MetricRow({
+function InsightRow({
   label,
   value,
   valueColor,
@@ -385,13 +703,13 @@ function MetricRow({
 }) {
   const theme = useTheme();
   return (
-    <View style={styles.metricRow}>
-      <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>
+    <View style={styles.insightRow}>
+      <Text style={[styles.insightLabel, { color: theme.textSecondary }]}>
         {label}
       </Text>
       <Text
-        style={[styles.metricValue, { color: valueColor ?? theme.text }]}
-        numberOfLines={1}>
+        style={[styles.insightValue, { color: valueColor ?? theme.text }]}
+        numberOfLines={2}>
         {value}
       </Text>
     </View>
@@ -399,80 +717,153 @@ function MetricRow({
 }
 
 const styles = StyleSheet.create({
-  currencyTabs: {
-    gap: Spacing.two,
-    paddingVertical: 2,
-  },
-  currencyTab: {
-    paddingHorizontal: Spacing.three,
-    paddingVertical: 6,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-  },
-  currencyTabText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  customRangeRow: {
-    flexDirection: 'row',
-    gap: Spacing.two,
-  },
-  flex1: {
-    flex: 1,
-  },
-  navigatorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.two,
-  },
-  navBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: Radius.sm,
+  headerBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  rangeTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 15,
-    fontWeight: '700',
+  headerIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  kpiGrid: {
+  horizontalRow: {
+    gap: Spacing.two,
+    paddingVertical: 2,
+  },
+  chip: {
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: 7,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  chipText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  selectorRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: Spacing.two,
   },
-  kpiTile: {
+  selectorTrigger: {
     flex: 1,
+    minHeight: 40,
     borderRadius: Radius.md,
-    padding: Spacing.three - 4,
-    gap: 4,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.two + 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
-  kpiLabel: {
+  selectorText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  customRangeWrap: {
+    marginTop: Spacing.one,
+  },
+  catDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+  },
+  summaryDividerH: {
+    height: 1,
+    width: '100%',
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  summaryTile: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 4,
+  },
+  summaryDivider: {
+    width: 1,
+    height: 36,
+  },
+  summaryLabel: {
     fontSize: 12,
     fontWeight: '600',
   },
-  kpiValue: {
+  summaryValue: {
+    fontWeight: '800',
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
   },
-  metricsList: {
-    marginTop: Spacing.two,
+  seeAllText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  rankedList: {
+    gap: Spacing.two,
+    marginTop: Spacing.one,
+  },
+  rankedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two + 2,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+  },
+  pressed: {
+    opacity: 0.72,
+  },
+  rankedNameWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  rankedName: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  rankedSub: {
+    fontSize: 11,
+  },
+  rankedRight: {
+    alignItems: 'flex-end',
+    gap: 2,
+  },
+  rankedAmt: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  rankedPct: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  insightsList: {
     gap: Spacing.two,
   },
-  metricRow: {
+  insightRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     gap: Spacing.two,
   },
-  metricLabel: {
+  insightLabel: {
     fontSize: 13,
-    fontWeight: '500',
+    fontWeight: '600',
   },
-  metricValue: {
+  insightValue: {
     flex: 1,
     textAlign: 'right',
     fontSize: 13,
@@ -482,8 +873,38 @@ const styles = StyleSheet.create({
     height: 1,
     width: '100%',
   },
-  sectionTitle: {
-    fontSize: 16,
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  modalTitle: {
+    fontSize: 17,
     fontWeight: '700',
+  },
+  sheetList: {
+    gap: Spacing.one,
+  },
+  modalScroll: {
+    maxHeight: 400,
+  },
+  catOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: Spacing.two + 2,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    marginBottom: Spacing.two,
+  },
+  catOptionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two + 2,
+  },
+  catOptionText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

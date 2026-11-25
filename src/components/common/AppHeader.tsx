@@ -11,6 +11,7 @@ interface AppHeaderProps {
   subtitle?: string;
   showBack?: boolean;
   onBackPress?: () => void;
+  leftAction?: ReactNode;
   rightAction?: ReactNode;
 }
 
@@ -19,6 +20,7 @@ export function AppHeader({
   subtitle,
   showBack = false,
   onBackPress,
+  leftAction,
   rightAction,
 }: AppHeaderProps) {
   const theme = useTheme();
@@ -32,8 +34,8 @@ export function AppHeader({
   };
 
   return (
-    <View style={styles.container}>
-      <View style={styles.leftGroup}>
+    <View style={[styles.container, subtitle ? styles.containerWithSubtitle : null]}>
+      <View style={styles.leftSlot}>
         {showBack ? (
           <Pressable
             onPress={handleBack}
@@ -44,64 +46,95 @@ export function AppHeader({
               { backgroundColor: theme.surface, borderColor: theme.border },
               pressed && styles.pressed,
             ]}>
-            <Ionicons name="chevron-back" size={20} color={theme.text} />
+            <Ionicons name="arrow-back" size={19} color={theme.text} />
           </Pressable>
-        ) : null}
-
-        <View style={styles.titleBlock}>
-          <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>
-            {title}
-          </Text>
-          {subtitle ? (
-            <Text style={[styles.subtitle, { color: theme.textSecondary }]} numberOfLines={2}>
-              {subtitle}
-            </Text>
-          ) : null}
-        </View>
+        ) : (
+          leftAction
+        )}
       </View>
 
-      {rightAction ? <View style={styles.rightSlot}>{rightAction}</View> : null}
+      <View
+        pointerEvents="none"
+        style={[styles.centerOverlay, rightAction ? styles.centerWideInset : styles.centerStdInset]}>
+        <Text
+          style={[styles.title, { color: theme.text }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit>
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text style={[styles.subtitle, { color: theme.textSecondary }]} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
+
+      <View style={styles.rightSlot}>{rightAction}</View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
+    position: 'relative',
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: Spacing.two,
     paddingVertical: Spacing.one,
   },
-  leftGroup: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
+  containerWithSubtitle: {
+    minHeight: 52,
+  },
+  leftSlot: {
+    minWidth: 42,
+    height: 40,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    zIndex: 2,
   },
   backButton: {
     width: 38,
     height: 38,
-    borderRadius: 10,
+    borderRadius: 19,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  titleBlock: {
-    flex: 1,
-    gap: 2,
+  centerOverlay: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 1,
+    zIndex: 1,
+  },
+  centerStdInset: {
+    left: 50,
+    right: 50,
+  },
+  centerWideInset: {
+    left: 68,
+    right: 68,
   },
   title: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '700',
-    lineHeight: 28,
+    lineHeight: 25,
+    textAlign: 'center',
   },
   subtitle: {
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
+    textAlign: 'center',
   },
   rightSlot: {
-    flexShrink: 0,
+    minWidth: 42,
+    height: 40,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    zIndex: 2,
   },
   pressed: {
     opacity: 0.7,

@@ -3,6 +3,14 @@ export { AppCard } from './AppCard';
 export { AppHeader } from './AppHeader';
 export { AppInput } from './AppInput';
 export { AppScreen } from './AppScreen';
+export { BottomSheetModal } from './BottomSheetModal';
+export {
+  CALENDAR_WEEKDAYS,
+  CalendarMonthGrid,
+  computeCalendarGridMetrics,
+  type CalendarDayIndicator,
+  type CalendarGridMetrics,
+} from './CalendarMonthGrid';
 export { CategoryIcon } from './CategoryIcon';
 export { ConfirmDialog } from './ConfirmDialog';
 export { EmptyState } from './EmptyState';

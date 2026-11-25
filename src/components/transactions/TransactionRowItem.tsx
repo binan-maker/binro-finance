@@ -12,6 +12,7 @@ interface TransactionRowItemProps {
   transaction: Transaction;
   category?: Category;
   catalog?: readonly CurrencyConfig[];
+  subtitle?: string;
   onPress: () => void;
 }
 
@@ -19,13 +20,14 @@ export function TransactionRowItem({
   transaction,
   category,
   catalog,
+  subtitle,
   onPress,
 }: TransactionRowItemProps) {
   const theme = useTheme();
   const isIncome = transaction.type === 'income';
   const amountColor = isIncome ? theme.income : theme.expense;
   const signedAmount = isIncome ? transaction.amountMinor : -transaction.amountMinor;
-  const timeText = formatTimeForDisplay(transaction.createdAt);
+  const subtitleText = subtitle ?? formatTimeForDisplay(transaction.createdAt);
 
   return (
     <Pressable
@@ -42,9 +44,9 @@ export function TransactionRowItem({
         <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>
           {transaction.title}
         </Text>
-        {timeText ? (
+        {subtitleText ? (
           <Text style={[styles.time, { color: theme.textMuted }]} numberOfLines={1}>
-            {timeText}
+            {subtitleText}
           </Text>
         ) : null}
       </View>

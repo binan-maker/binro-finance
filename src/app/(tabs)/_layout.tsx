@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Tabs, useRouter } from 'expo-router';
 import type { ComponentProps } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -11,6 +11,13 @@ type CustomTabBarProps = Parameters<NonNullable<ComponentProps<typeof Tabs>['tab
 function CustomTabBar({ state, emitter, navigateToTab, insets }: CustomTabBarProps) {
   const theme = useTheme();
   const router = useRouter();
+  const { width } = useWindowDimensions();
+
+  const isCompact = width < 360;
+  const centerSlotWidth = isCompact ? 58 : 68;
+  const fabSize = isCompact ? 46 : 52;
+  const iconSize = isCompact ? 19 : 21;
+  const labelFontSize = isCompact ? 10 : 11;
 
   const routes = state.routes;
 
@@ -54,13 +61,18 @@ function CustomTabBar({ state, emitter, navigateToTab, insets }: CustomTabBarPro
         accessibilityState={{ selected: isFocused }}
         accessibilityLabel={label}
         style={styles.tabItem}>
-        <Ionicons name={iconName} size={21} color={color} />
+        <Ionicons name={iconName} size={iconSize} color={color} />
         <Text
           style={[
             styles.tabLabel,
-            { color, fontWeight: isFocused ? '700' : '500' },
+            {
+              color,
+              fontSize: labelFontSize,
+              fontWeight: isFocused ? '700' : '500',
+            },
           ]}
-          numberOfLines={1}>
+          numberOfLines={1}
+          maxFontSizeMultiplier={1.2}>
           {label}
         </Text>
       </Pressable>
@@ -80,7 +92,7 @@ function CustomTabBar({ state, emitter, navigateToTab, insets }: CustomTabBarPro
       {renderTabItem(0)}
       {renderTabItem(1)}
 
-      <View style={styles.centerSlot}>
+      <View style={[styles.centerSlot, { width: centerSlotWidth }]}>
         <Pressable
           onPress={() => router.push('/transactions/add')}
           accessibilityRole="button"
@@ -88,12 +100,14 @@ function CustomTabBar({ state, emitter, navigateToTab, insets }: CustomTabBarPro
           style={({ pressed }) => [
             styles.fabButton,
             {
+              width: fabSize,
+              height: fabSize,
               backgroundColor: theme.primary,
               shadowColor: theme.shadow,
             },
             pressed && styles.fabPressed,
           ]}>
-          <Ionicons name="add" size={28} color={theme.primaryText} />
+          <Ionicons name="add" size={isCompact ? 24 : 28} color={theme.primaryText} />
         </Pressable>
       </View>
 
@@ -130,18 +144,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 3,
     paddingVertical: 4,
+    minWidth: 0,
   },
   tabLabel: {
-    fontSize: 11,
+    textAlign: 'center',
   },
   centerSlot: {
-    width: 68,
     alignItems: 'center',
     justifyContent: 'center',
   },
   fabButton: {
-    width: 52,
-    height: 52,
     borderRadius: Radius.full,
     alignItems: 'center',
     justifyContent: 'center',

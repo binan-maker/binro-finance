@@ -114,14 +114,19 @@ export class SQLiteBackupRepository implements IBackupRepository {
         await db.runAsync(
           `INSERT INTO app_settings (
             id, currency_code, opening_balance_minor, opening_balance_currency_code,
-            theme, date_format, onboarding_completed
-          ) VALUES (1, ?, ?, ?, ?, ?, ?)`,
+            theme, date_format, onboarding_completed, profile_name, profile_bio,
+            profile_avatar, currency_initialized
+          ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           backupDefaultCurrency,
           payload.settings.openingBalanceMinor,
           backupOpeningCurrency,
           payload.settings.theme,
           payload.settings.dateFormat,
           payload.settings.onboardingCompleted ? 1 : 0,
+          payload.settings.profileName ?? null,
+          payload.settings.profileBio ?? null,
+          payload.settings.profileAvatar ?? null,
+          1,
         );
       }
 
@@ -223,11 +228,12 @@ export class SQLiteBackupRepository implements IBackupRepository {
         }
 
         const res = await db.runAsync(
-          `INSERT OR IGNORE INTO tags (id, name, color, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT OR IGNORE INTO tags (id, name, color, is_archived, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
           tag.id,
           trimmedName,
           tag.color,
+          tag.isArchived ? 1 : 0,
           tag.createdAt,
           tag.updatedAt,
         );

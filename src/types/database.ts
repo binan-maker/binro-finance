@@ -49,6 +49,7 @@ export interface TagRow {
   id: string;
   name: string;
   color: string | null;
+  is_archived?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +97,10 @@ export interface AppSettingsRow {
   theme: ThemePreference;
   date_format: DateFormatPreference;
   onboarding_completed: number;
+  profile_name?: string | null;
+  profile_bio?: string | null;
+  profile_avatar?: string | null;
+  currency_initialized?: number | null;
 }
 
 export interface NotificationRow {
@@ -179,6 +184,7 @@ export interface CreateTagInput {
 export interface UpdateTagInput {
   name?: string;
   color?: string;
+  isArchived?: boolean;
 }
 
 export interface CreatePaymentMethodInput {
@@ -211,6 +217,10 @@ export interface UpdateSettingsInput {
   theme?: ThemePreference;
   dateFormat?: DateFormatPreference;
   onboardingCompleted?: boolean;
+  profileName?: string | null;
+  profileBio?: string | null;
+  profileAvatar?: string | null;
+  currencyInitialized?: boolean;
 }
 
 export interface CreateNotificationInput {
@@ -265,7 +275,7 @@ export interface ICategoryRepository {
 }
 
 export interface ITagRepository {
-  getAll(): Promise<Tag[]>;
+  getAll(options?: { includeArchived?: boolean }): Promise<Tag[]>;
   getById(id: string): Promise<Tag | null>;
   create(input: CreateTagInput): Promise<Tag>;
   update(id: string, input: UpdateTagInput): Promise<Tag>;
@@ -277,6 +287,7 @@ export interface IPaymentMethodRepository {
   getById(id: string): Promise<PaymentMethodRecord | null>;
   create(input: CreatePaymentMethodInput): Promise<PaymentMethodRecord>;
   update(id: string, input: UpdatePaymentMethodInput): Promise<PaymentMethodRecord>;
+  delete(id: string): Promise<void>;
 }
 
 export interface ICurrencyRepository {
@@ -300,7 +311,9 @@ export interface INotificationRepository {
   getAll(): Promise<AppNotification[]>;
   create(input: CreateNotificationInput): Promise<AppNotification>;
   markAsRead(id: string): Promise<void>;
+  markAsUnread(id: string): Promise<void>;
   markAllAsRead(): Promise<void>;
+  delete(id: string): Promise<void>;
 }
 
 export interface IBackupRepository {

@@ -52,8 +52,18 @@ export class SQLiteNotificationRepository implements INotificationRepository {
     await db.runAsync('UPDATE notifications SET is_read = 1 WHERE id = ?', id);
   }
 
+  async markAsUnread(id: string): Promise<void> {
+    const db = await this.getDb();
+    await db.runAsync('UPDATE notifications SET is_read = 0 WHERE id = ?', id);
+  }
+
   async markAllAsRead(): Promise<void> {
     const db = await this.getDb();
     await db.runAsync('UPDATE notifications SET is_read = 1 WHERE is_read = 0');
+  }
+
+  async delete(id: string): Promise<void> {
+    const db = await this.getDb();
+    await db.runAsync('DELETE FROM notifications WHERE id = ?', id);
   }
 }

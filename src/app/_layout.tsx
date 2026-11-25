@@ -91,6 +91,7 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="onboarding/index" options={{ gestureEnabled: false }} />
         <Stack.Screen name="transactions/add" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="transactions/filters" />
         <Stack.Screen name="transactions/[id]" />
         <Stack.Screen name="notifications/index" />
         <Stack.Screen name="calendar/index" />

@@ -12,6 +12,7 @@ import {
   mergeCurrencyCatalog,
   syncCurrencyCatalog,
 } from '@/services/currency/currencyCatalogService';
+import { detectDeviceCurrencyCode } from '@/services/currency/localizationCurrency';
 import type {
   BackupPayload,
   CreateCategoryInput,
@@ -35,9 +36,42 @@ import type {
   PaymentMethodRecord,
   Tag,
   Transaction,
+  TransactionType,
 } from '@/types/models';
-import { parseISODateParts } from '@/utils/date';
+import type { TransactionFilterState } from '@/types/reports';
+import { addDaysToISODate, getTodayISODate, parseISODateParts } from '@/utils/date';
 import { formatMoney } from '@/utils/money';
+
+export interface TransactionDraft {
+  mode: 'create' | 'edit';
+  transactionId?: string;
+  step: 1 | 2;
+  type: TransactionType;
+  amountText: string;
+  currencyCode: string;
+  title: string;
+  categoryId: string | null;
+  tagIds: string[];
+  transactionDate: string;
+  paymentMethodId: string | null;
+  paymentMethod: string;
+  note: string;
+}
+
+export function createDefaultTransactionFilters(): TransactionFilterState {
+  const today = getTodayISODate();
+  return {
+    datePreset: 'all_time',
+    customStartDate: addDaysToISODate(today, -29),
+    customEndDate: today,
+    selectedYears: [],
+    categoryIds: [],
+    paymentMethodIds: [],
+    tagIds: [],
+    currencyCode: 'all',
+    sortBy: 'newest',
+  };
+}
 
 const DEFAULT_SETTINGS: AppSettings = {
   id: 1,
@@ -47,6 +81,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   dateFormat: 'DD MMM YYYY',
   onboardingCompleted: false,
+  profileName: null,
+  profileBio: null,
+  profileAvatar: null,
+  currencyInitialized: false,
 };
 
 interface AppStoreState {
@@ -61,10 +99,17 @@ interface AppStoreState {
   transactions: Transaction[];
   budgets: Budget[];
   notifications: AppNotification[];
+  transactionFilters: TransactionFilterState;
+  transactionDraft: TransactionDraft | null;
 
   initializeApp: () => Promise<void>;
   refreshData: () => Promise<void>;
   refreshCurrencyCatalog: () => Promise<void>;
+  setTransactionFilters: (next: TransactionFilterState) => void;
+  resetTransactionFilters: () => void;
+  setTransactionDraft: (draft: TransactionDraft | null) => void;
+  patchTransactionDraft: (patch: Partial<TransactionDraft>) => void;
+  clearTransactionDraft: () => void;
   completeOnboarding: (params: {
     currencyCode: string;
     openingBalanceMinor: number;
@@ -87,13 +132,16 @@ interface AppStoreState {
     id: string,
     input: UpdatePaymentMethodInput,
   ) => Promise<PaymentMethodRecord>;
+  deletePaymentMethod: (id: string) => Promise<void>;
 
   upsertBudget: (input: UpsertBudgetInput) => Promise<Budget>;
   deleteBudget: (id: string) => Promise<void>;
 
   addNotification: (input: CreateNotificationInput) => Promise<AppNotification>;
   markNotificationRead: (id: string) => Promise<void>;
+  markNotificationUnread: (id: string) => Promise<void>;
   markAllNotificationsRead: () => Promise<void>;
+  deleteNotification: (id: string) => Promise<void>;
 
   restoreBackup: (
     payload: BackupPayload,
@@ -115,7 +163,7 @@ async function loadSnapshot() {
   ] = await Promise.all([
     repositories.settings.get(),
     repositories.categories.getAll({ includeArchived: true }),
-    repositories.tags.getAll(),
+    repositories.tags.getAll({ includeArchived: true }),
     repositories.paymentMethods.getAll({ includeArchived: true }),
     repositories.currencies.getAll(),
     repositories.transactions.getAll(),
@@ -151,6 +199,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   transactions: [],
   budgets: [],
   notifications: [],
+  transactionFilters: createDefaultTransactionFilters(),
+  transactionDraft: null,
 
   initializeApp: async () => {
     if (get().isLoading) return;
@@ -158,7 +208,19 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
     try {
       await initializeDatabase();
-      const snapshot = await loadSnapshot();
+      let snapshot = await loadSnapshot();
+
+      // Only detect device currency on first launch when no saved preference exists
+      if (!snapshot.settings.onboardingCompleted && !snapshot.settings.currencyInitialized) {
+        const detectedCurrency = detectDeviceCurrencyCode(snapshot.currencies);
+        const updatedSettings = await repositories.settings.update({
+          currencyCode: detectedCurrency,
+          openingBalanceCurrencyCode: detectedCurrency,
+          currencyInitialized: true,
+        });
+        snapshot = { ...snapshot, settings: updatedSettings };
+      }
+
       set({
         isInitialized: true,
         isLoading: false,
@@ -193,6 +255,34 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
   },
 
+  setTransactionFilters: (next) => {
+    set({ transactionFilters: next });
+  },
+
+  resetTransactionFilters: () => {
+    set({ transactionFilters: createDefaultTransactionFilters() });
+  },
+
+  setTransactionDraft: (draft) => {
+    set({ transactionDraft: draft });
+  },
+
+  patchTransactionDraft: (patch) => {
+    set((state) => {
+      if (!state.transactionDraft) return state;
+      return {
+        transactionDraft: {
+          ...state.transactionDraft,
+          ...patch,
+        },
+      };
+    });
+  },
+
+  clearTransactionDraft: () => {
+    set({ transactionDraft: null });
+  },
+
   completeOnboarding: async ({ currencyCode, openingBalanceMinor }) => {
     set({ isLoading: true, error: null });
     try {
@@ -201,6 +291,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         openingBalanceMinor,
         openingBalanceCurrencyCode: currencyCode,
         onboardingCompleted: true,
+        currencyInitialized: true,
       });
       set({ settings: updated, isLoading: false });
     } catch (error) {
@@ -230,7 +321,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const transactions = await repositories.transactions.getAll();
     set({ transactions });
 
-    // Check genuine budget exceedance event if budgets exist for that month & currency
     if (created.type === 'expense') {
       const { budgets, categories, currencies, notifications } = get();
       const { year, month } = parseISODateParts(created.transactionDate);
@@ -298,14 +388,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   createTag: async (input) => {
     const created = await repositories.tags.create(input);
-    const tags = await repositories.tags.getAll();
+    const tags = await repositories.tags.getAll({ includeArchived: true });
     set({ tags });
     return created;
   },
 
   updateTag: async (id, input) => {
     const updated = await repositories.tags.update(id, input);
-    const tags = await repositories.tags.getAll();
+    const tags = await repositories.tags.getAll({ includeArchived: true });
     set({ tags });
     return updated;
   },
@@ -313,7 +403,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   deleteTag: async (id) => {
     await repositories.tags.delete(id);
     const [tags, transactions] = await Promise.all([
-      repositories.tags.getAll(),
+      repositories.tags.getAll({ includeArchived: true }),
       repositories.transactions.getAll(),
     ]);
     set({ tags, transactions });
@@ -331,6 +421,15 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const paymentMethods = await repositories.paymentMethods.getAll({ includeArchived: true });
     set({ paymentMethods });
     return updated;
+  },
+
+  deletePaymentMethod: async (id) => {
+    await repositories.paymentMethods.delete(id);
+    const [paymentMethods, transactions] = await Promise.all([
+      repositories.paymentMethods.getAll({ includeArchived: true }),
+      repositories.transactions.getAll(),
+    ]);
+    set({ paymentMethods, transactions });
   },
 
   upsertBudget: async (input) => {
@@ -359,8 +458,20 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     set({ notifications });
   },
 
+  markNotificationUnread: async (id) => {
+    await repositories.notifications.markAsUnread(id);
+    const notifications = await repositories.notifications.getAll();
+    set({ notifications });
+  },
+
   markAllNotificationsRead: async () => {
     await repositories.notifications.markAllAsRead();
+    const notifications = await repositories.notifications.getAll();
+    set({ notifications });
+  },
+
+  deleteNotification: async (id) => {
+    await repositories.notifications.delete(id);
     const notifications = await repositories.notifications.getAll();
     set({ notifications });
   },
@@ -381,9 +492,19 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       await repositories.backup.clearAllData();
-      const snapshot = await loadSnapshot();
+      let snapshot = await loadSnapshot();
+      const detectedCurrency = detectDeviceCurrencyCode(snapshot.currencies);
+      const updatedSettings = await repositories.settings.update({
+        currencyCode: detectedCurrency,
+        openingBalanceCurrencyCode: detectedCurrency,
+        currencyInitialized: true,
+      });
+      snapshot = { ...snapshot, settings: updatedSettings };
+
       set({
         ...snapshot,
+        transactionDraft: null,
+        transactionFilters: createDefaultTransactionFilters(),
         isLoading: false,
       });
     } catch {

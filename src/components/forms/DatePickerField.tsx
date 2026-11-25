@@ -1,23 +1,23 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { AppButton } from '@/components/common';
+import {
+  AppButton,
+  BottomSheetModal,
+  CalendarMonthGrid,
+} from '@/components/common';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { DateFormatPreference } from '@/types/models';
 import {
   addDaysToISODate,
   formatDateForDisplay,
-  getDaysInMonth,
   getMonthLabel,
   getTodayISODate,
   isValidISODate,
   parseISODateParts,
-  toISODate,
 } from '@/utils/date';
-
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
 interface DatePickerFieldProps {
   label?: string;
@@ -63,16 +63,6 @@ export function DatePickerField({
     setViewYear(nextYear);
   };
 
-  const firstWeekday = new Date(viewYear, viewMonth - 1, 1).getDay();
-  const daysInMonth = getDaysInMonth(viewYear, viewMonth);
-  const cells: (number | null)[] = [
-    ...Array.from({ length: firstWeekday }, () => null),
-    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
-  ];
-  while (cells.length % 7 !== 0) {
-    cells.push(null);
-  }
-
   const today = getTodayISODate();
   const yesterday = addDaysToISODate(today, -1);
 
@@ -105,140 +95,95 @@ export function DatePickerField({
         <Text style={[styles.errorText, { color: theme.danger }]}>{error}</Text>
       ) : null}
 
-      <Modal
+      <BottomSheetModal
         visible={visible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setVisible(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setVisible(false)}>
+        onClose={() => setVisible(false)}
+        variant="center"
+        maxWidth={380}>
+        <View style={styles.monthHeader}>
           <Pressable
-            style={[
-              styles.modalCard,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-            onPress={(e) => e.stopPropagation()}>
-            <View style={styles.monthHeader}>
-              <Pressable
-                onPress={() => stepMonth(-1)}
-                accessibilityRole="button"
-                style={[styles.navBtn, { borderColor: theme.border }]}>
-                <Ionicons name="chevron-back" size={18} color={theme.text} />
-              </Pressable>
-              <Text style={[styles.monthTitle, { color: theme.text }]}>
-                {getMonthLabel(viewYear, viewMonth)}
-              </Text>
-              <Pressable
-                onPress={() => stepMonth(1)}
-                accessibilityRole="button"
-                style={[styles.navBtn, { borderColor: theme.border }]}>
-                <Ionicons name="chevron-forward" size={18} color={theme.text} />
-              </Pressable>
-            </View>
-
-            <View style={styles.quickShortcuts}>
-              <Pressable
-                onPress={() => {
-                  onChange(today);
-                  setVisible(false);
-                }}
-                style={[
-                  styles.quickChip,
-                  {
-                    backgroundColor:
-                      safeValue === today ? theme.primarySoft : theme.surfaceElevated,
-                    borderColor: safeValue === today ? theme.primary : theme.border,
-                  },
-                ]}>
-                <Text
-                  style={[
-                    styles.quickChipText,
-                    { color: safeValue === today ? theme.primary : theme.text },
-                  ]}>
-                  Today
-                </Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => {
-                  onChange(yesterday);
-                  setVisible(false);
-                }}
-                style={[
-                  styles.quickChip,
-                  {
-                    backgroundColor:
-                      safeValue === yesterday ? theme.primarySoft : theme.surfaceElevated,
-                    borderColor: safeValue === yesterday ? theme.primary : theme.border,
-                  },
-                ]}>
-                <Text
-                  style={[
-                    styles.quickChipText,
-                    { color: safeValue === yesterday ? theme.primary : theme.text },
-                  ]}>
-                  Yesterday
-                </Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.weekRow}>
-              {WEEKDAYS.map((day) => (
-                <Text key={day} style={[styles.weekdayText, { color: theme.textMuted }]}>
-                  {day}
-                </Text>
-              ))}
-            </View>
-
-            <View style={styles.grid}>
-              {cells.map((day, idx) => {
-                if (day === null) {
-                  return <View key={`empty-${idx}`} style={styles.dayCell} />;
-                }
-
-                const cellISO = toISODate(viewYear, viewMonth, day);
-                const isSelected = cellISO === safeValue;
-                const isToday = cellISO === today;
-
-                return (
-                  <Pressable
-                    key={cellISO}
-                    onPress={() => {
-                      onChange(cellISO);
-                      setVisible(false);
-                    }}
-                    style={[
-                      styles.dayCell,
-                      isSelected && { backgroundColor: theme.primary },
-                      !isSelected &&
-                        isToday && {
-                          borderWidth: 1,
-                          borderColor: theme.primary,
-                        },
-                    ]}>
-                    <Text
-                      style={[
-                        styles.dayText,
-                        {
-                          color: isSelected ? theme.primaryText : theme.text,
-                          fontWeight: isSelected || isToday ? '700' : '500',
-                        },
-                      ]}>
-                      {day}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <AppButton
-              label="Close"
-              variant="outline"
-              onPress={() => setVisible(false)}
-              fullWidth
-            />
+            onPress={() => stepMonth(-1)}
+            accessibilityRole="button"
+            accessibilityLabel="Previous month"
+            style={[styles.navBtn, { borderColor: theme.border }]}>
+            <Ionicons name="chevron-back" size={18} color={theme.text} />
           </Pressable>
-        </Pressable>
-      </Modal>
+          <Text style={[styles.monthTitle, { color: theme.text }]}>
+            {getMonthLabel(viewYear, viewMonth)}
+          </Text>
+          <Pressable
+            onPress={() => stepMonth(1)}
+            accessibilityRole="button"
+            accessibilityLabel="Next month"
+            style={[styles.navBtn, { borderColor: theme.border }]}>
+            <Ionicons name="chevron-forward" size={18} color={theme.text} />
+          </Pressable>
+        </View>
+
+        <View style={styles.quickShortcuts}>
+          <Pressable
+            onPress={() => {
+              onChange(today);
+              setVisible(false);
+            }}
+            style={[
+              styles.quickChip,
+              {
+                backgroundColor:
+                  safeValue === today ? theme.primarySoft : theme.surfaceElevated,
+                borderColor: safeValue === today ? theme.primary : theme.border,
+              },
+            ]}>
+            <Text
+              style={[
+                styles.quickChipText,
+                { color: safeValue === today ? theme.primary : theme.text },
+              ]}>
+              Today
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => {
+              onChange(yesterday);
+              setVisible(false);
+            }}
+            style={[
+              styles.quickChip,
+              {
+                backgroundColor:
+                  safeValue === yesterday ? theme.primarySoft : theme.surfaceElevated,
+                borderColor: safeValue === yesterday ? theme.primary : theme.border,
+              },
+            ]}>
+            <Text
+              style={[
+                styles.quickChipText,
+                { color: safeValue === yesterday ? theme.primary : theme.text },
+              ]}>
+              Yesterday
+            </Text>
+          </Pressable>
+        </View>
+
+        <CalendarMonthGrid
+          year={viewYear}
+          month={viewMonth}
+          selectedDate={safeValue}
+          todayISO={today}
+          onSelectDate={(cellISO) => {
+            onChange(cellISO);
+            setVisible(false);
+          }}
+        />
+
+        <AppButton
+          label="Close"
+          variant="outline"
+          onPress={() => setVisible(false)}
+          fullWidth
+        />
+      </BottomSheetModal>
     </View>
   );
 }
@@ -277,21 +222,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
   },
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing.three,
-  },
-  modalCard: {
-    width: '100%',
-    maxWidth: 380,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    padding: Spacing.three,
-    gap: Spacing.three,
-  },
   monthHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -300,7 +230,7 @@ const styles = StyleSheet.create({
   navBtn: {
     width: 34,
     height: 34,
-    borderRadius: Radius.sm,
+    borderRadius: Radius.full,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
@@ -322,28 +252,5 @@ const styles = StyleSheet.create({
   quickChipText: {
     fontSize: 12,
     fontWeight: '600',
-  },
-  weekRow: {
-    flexDirection: 'row',
-  },
-  weekdayText: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  dayCell: {
-    width: '14.285%',
-    aspectRatio: 1,
-    borderRadius: Radius.full,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dayText: {
-    fontSize: 14,
   },
 });

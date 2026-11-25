@@ -131,10 +131,10 @@ export function BudgetProgressCard({
                     setMenuOpen(false);
                     onEdit();
                   }}
+                  accessibilityRole="button"
                   style={styles.menuItem}>
-                  <Ionicons name="create-outline" size={18} color={theme.text} />
                   <Text style={[styles.menuItemText, { color: theme.text }]}>
-                    Edit Budget
+                    Edit
                   </Text>
                 </Pressable>
               ) : null}
@@ -147,10 +147,10 @@ export function BudgetProgressCard({
                     setMenuOpen(false);
                     onDelete();
                   }}
+                  accessibilityRole="button"
                   style={styles.menuItem}>
-                  <Ionicons name="close-circle-outline" size={18} color={theme.danger} />
                   <Text style={[styles.menuItemText, { color: theme.danger }]}>
-                    Delete Budget
+                    Delete
                   </Text>
                 </Pressable>
               ) : null}
@@ -247,9 +247,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two + 2,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.three,
   },

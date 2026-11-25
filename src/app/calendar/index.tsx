@@ -8,6 +8,7 @@ import {
   AppCard,
   AppHeader,
   AppScreen,
+  CalendarMonthGrid,
   EmptyState,
 } from '@/components/common';
 import { TransactionRowItem } from '@/components/transactions/TransactionRowItem';
@@ -17,15 +18,11 @@ import { useAppStore } from '@/store/app-store';
 import type { Transaction } from '@/types/models';
 import {
   formatDateForDisplay,
-  getDaysInMonth,
   getMonthLabel,
   getTodayISODate,
   parseISODateParts,
-  toISODate,
 } from '@/utils/date';
 import { formatMoney } from '@/utils/money';
-
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
 interface CurrencyDayTotals {
   currencyCode: string;
@@ -119,16 +116,6 @@ export default function CalendarScreen() {
     setSelectedDate(todayISO);
   };
 
-  const firstWeekday = new Date(viewYear, viewMonth - 1, 1).getDay();
-  const daysInMonth = getDaysInMonth(viewYear, viewMonth);
-  const cells: (number | null)[] = [
-    ...Array.from({ length: firstWeekday }, () => null),
-    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
-  ];
-  while (cells.length % 7 !== 0) {
-    cells.push(null);
-  }
-
   const selectedDayData = dayMap.get(selectedDate);
   const selectedCurrencyTotals = selectedDayData
     ? Array.from(selectedDayData.byCurrency.values())
@@ -145,7 +132,6 @@ export default function CalendarScreen() {
     <AppScreen edges={['top', 'bottom', 'left', 'right']}>
       <AppHeader
         title="Calendar"
-        subtitle="Date-wise activity"
         showBack
         rightAction={
           <AppButton label="Today" variant="outline" size="sm" onPress={jumpToToday} />
@@ -175,79 +161,15 @@ export default function CalendarScreen() {
           </Pressable>
         </View>
 
-        <View style={styles.weekRow}>
-          {WEEKDAYS.map((day) => (
-            <Text key={day} style={[styles.weekdayText, { color: theme.textMuted }]}>
-              {day}
-            </Text>
-          ))}
-        </View>
-
-        <View style={styles.grid}>
-          {cells.map((day, idx) => {
-            if (day === null) {
-              return <View key={`empty-${idx}`} style={styles.dayCell} />;
-            }
-
-            const cellISO = toISODate(viewYear, viewMonth, day);
-            const info = dayMap.get(cellISO);
-            const isSelected = cellISO === selectedDate;
-            const isToday = cellISO === todayISO;
-
-            return (
-              <Pressable
-                key={cellISO}
-                onPress={() => setSelectedDate(cellISO)}
-                style={[
-                  styles.dayCell,
-                  isSelected && { backgroundColor: theme.primary },
-                  !isSelected &&
-                    isToday && {
-                      borderWidth: 1,
-                      borderColor: theme.primary,
-                    },
-                ]}>
-                <Text
-                  style={[
-                    styles.dayNumber,
-                    {
-                      color: isSelected ? theme.primaryText : theme.text,
-                      fontWeight: isSelected || isToday ? '700' : '500',
-                    },
-                  ]}>
-                  {day}
-                </Text>
-
-                <View style={styles.dotRow}>
-                  {info?.hasIncome ? (
-                    <View
-                      style={[
-                        styles.dot,
-                        {
-                          backgroundColor: isSelected
-                            ? theme.primaryText
-                            : theme.income,
-                        },
-                      ]}
-                    />
-                  ) : null}
-                  {info?.hasExpense ? (
-                    <View
-                      style={[
-                        styles.dot,
-                        {
-                          backgroundColor: isSelected
-                            ? theme.primaryText
-                            : theme.expense,
-                        },
-                      ]}
-                    />
-                  ) : null}
-                </View>
-              </Pressable>
-            );
-          })}
-        </View>
+        <CalendarMonthGrid
+          year={viewYear}
+          month={viewMonth}
+          selectedDate={selectedDate}
+          todayISO={todayISO}
+          indicators={dayMap}
+          showDots
+          onSelectDate={setSelectedDate}
+        />
       </AppCard>
 
       <AppCard>
@@ -348,11 +270,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: Spacing.one,
   },
   navBtn: {
     width: 34,
     height: 34,
-    borderRadius: Radius.sm,
+    borderRadius: Radius.full,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
@@ -360,42 +283,6 @@ const styles = StyleSheet.create({
   monthTitle: {
     fontSize: 16,
     fontWeight: '700',
-  },
-  weekRow: {
-    flexDirection: 'row',
-    marginTop: Spacing.one,
-  },
-  weekdayText: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  dayCell: {
-    width: '14.285%',
-    aspectRatio: 1,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 2,
-  },
-  dayNumber: {
-    fontSize: 14,
-  },
-  dotRow: {
-    flexDirection: 'row',
-    gap: 3,
-    height: 6,
-    alignItems: 'center',
-  },
-  dot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
   },
   selectedHeader: {
     flexDirection: 'row',

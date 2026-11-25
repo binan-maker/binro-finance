@@ -8,9 +8,12 @@ import { mapTagRow } from './mappers';
 export class SQLiteTagRepository implements ITagRepository {
   constructor(private readonly getDb: () => Promise<SqlDatabaseAdapter>) {}
 
-  async getAll(): Promise<Tag[]> {
+  async getAll(options?: { includeArchived?: boolean }): Promise<Tag[]> {
     const db = await this.getDb();
-    const rows = await db.getAllAsync<TagRow>('SELECT * FROM tags ORDER BY name ASC');
+    const whereClause = options?.includeArchived ? '' : 'WHERE COALESCE(is_archived, 0) = 0';
+    const rows = await db.getAllAsync<TagRow>(
+      `SELECT * FROM tags ${whereClause} ORDER BY name ASC`,
+    );
     return rows.map(mapTagRow);
   }
 
@@ -27,11 +30,18 @@ export class SQLiteTagRepository implements ITagRepository {
     }
 
     const db = await this.getDb();
-    const duplicate = await db.getFirstAsync<Pick<TagRow, 'id'>>(
-      'SELECT id FROM tags WHERE LOWER(name) = LOWER(?) LIMIT 1',
+    const duplicate = await db.getFirstAsync<TagRow>(
+      'SELECT * FROM tags WHERE LOWER(name) = LOWER(?) LIMIT 1',
       trimmedName,
     );
     if (duplicate) {
+      if (duplicate.is_archived === 1) {
+        return this.update(duplicate.id, {
+          name: trimmedName,
+          color: input.color || duplicate.color || '#10B981',
+          isArchived: false,
+        });
+      }
       throw new Error('A tag with this name already exists.');
     }
 
@@ -39,8 +49,8 @@ export class SQLiteTagRepository implements ITagRepository {
     const now = new Date().toISOString();
 
     await db.runAsync(
-      `INSERT INTO tags (id, name, color, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO tags (id, name, color, is_archived, created_at, updated_at)
+       VALUES (?, ?, ?, 0, ?, ?)`,
       id,
       trimmedName,
       input.color || '#10B981',
@@ -79,10 +89,13 @@ export class SQLiteTagRepository implements ITagRepository {
     }
 
     const now = new Date().toISOString();
+    const nextArchived =
+      input.isArchived !== undefined ? input.isArchived : existing.isArchived;
     await db.runAsync(
-      'UPDATE tags SET name = ?, color = ?, updated_at = ? WHERE id = ?',
+      'UPDATE tags SET name = ?, color = ?, is_archived = ?, updated_at = ? WHERE id = ?',
       nextName,
       input.color ?? existing.color,
+      nextArchived ? 1 : 0,
       now,
       id,
     );

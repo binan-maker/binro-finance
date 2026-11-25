@@ -20,6 +20,7 @@ export interface Tag {
   id: string;
   name: string;
   color: string;
+  isArchived: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -84,6 +85,10 @@ export interface AppSettings {
   theme: ThemePreference;
   dateFormat: DateFormatPreference;
   onboardingCompleted: boolean;
+  profileName: string | null;
+  profileBio: string | null;
+  profileAvatar: string | null;
+  currencyInitialized: boolean;
 }
 
 export interface AppNotification {

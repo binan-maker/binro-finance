@@ -1,8 +1,8 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Modal, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   AppCard,
@@ -28,6 +28,8 @@ import { formatMoney } from '@/utils/money';
 export default function TransactionDetailsScreen() {
   const theme = useTheme();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const settings = useAppStore((s) => s.settings);
@@ -302,27 +304,37 @@ export default function TransactionDetailsScreen() {
         </Text>
       ) : null}
 
-      {/* Overflow Action Menu */}
+      {/* Text-Only Overflow Action Menu */}
       <Modal
         visible={menuVisible}
         transparent
         animationType="fade"
         onRequestClose={() => setMenuVisible(false)}>
         <Pressable
-          style={styles.menuBackdrop}
+          style={[
+            styles.menuBackdrop,
+            {
+              paddingTop: insets.top + 56,
+              paddingRight: Math.max(insets.right, Spacing.three),
+            },
+          ]}
           onPress={() => setMenuVisible(false)}>
           <View
             style={[
               styles.menuCard,
-              { backgroundColor: theme.surface, borderColor: theme.border },
+              {
+                width: Math.min(180, width * 0.55),
+                backgroundColor: theme.surface,
+                borderColor: theme.border,
+              },
             ]}>
             <Pressable
               onPress={() => {
                 setMenuVisible(false);
                 setIsEditing(true);
               }}
-              style={styles.menuItem}>
-              <Ionicons name="create-outline" size={18} color={theme.text} />
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}>
               <Text style={[styles.menuItemText, { color: theme.text }]}>Edit</Text>
             </Pressable>
 
@@ -333,8 +345,8 @@ export default function TransactionDetailsScreen() {
                 setMenuVisible(false);
                 setDeleteDialogVisible(true);
               }}
-              style={styles.menuItem}>
-              <Ionicons name="trash-outline" size={18} color={theme.danger} />
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}>
               <Text style={[styles.menuItemText, { color: theme.danger }]}>Delete</Text>
             </Pressable>
           </View>
@@ -469,21 +481,18 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.45)',
     alignItems: 'flex-end',
-    paddingTop: 72,
-    paddingRight: Spacing.three,
   },
   menuCard: {
-    width: 170,
     borderRadius: Radius.lg,
     borderWidth: 1,
     overflow: 'hidden',
   },
   menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two + 2,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.three - 2,
+  },
+  menuItemPressed: {
+    opacity: 0.72,
   },
   menuItemText: {
     fontSize: 15,

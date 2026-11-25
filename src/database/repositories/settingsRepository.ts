@@ -58,6 +58,25 @@ export class SQLiteSettingsRepository implements ISettingsRepository {
       throw new Error('Opening balance must be a non-negative integer in minor units.');
     }
 
+    const nextProfileName =
+      input.profileName !== undefined
+        ? input.profileName?.trim() || null
+        : current.profileName;
+    const nextProfileBio =
+      input.profileBio !== undefined
+        ? input.profileBio?.trim() || null
+        : current.profileBio;
+    const nextProfileAvatar =
+      input.profileAvatar !== undefined
+        ? input.profileAvatar?.trim() || null
+        : current.profileAvatar;
+    const nextCurrencyInitialized =
+      input.currencyInitialized !== undefined
+        ? input.currencyInitialized
+        : input.currencyCode !== undefined
+          ? true
+          : current.currencyInitialized;
+
     const db = await this.getDb();
     await db.runAsync(
       `UPDATE app_settings
@@ -66,7 +85,11 @@ export class SQLiteSettingsRepository implements ISettingsRepository {
            opening_balance_currency_code = ?,
            theme = ?,
            date_format = ?,
-           onboarding_completed = ?
+           onboarding_completed = ?,
+           profile_name = ?,
+           profile_bio = ?,
+           profile_avatar = ?,
+           currency_initialized = ?
        WHERE id = 1`,
       nextCurrency,
       nextOpeningBalance,
@@ -80,6 +103,10 @@ export class SQLiteSettingsRepository implements ISettingsRepository {
         : current.onboardingCompleted
           ? 1
           : 0,
+      nextProfileName,
+      nextProfileBio,
+      nextProfileAvatar,
+      nextCurrencyInitialized ? 1 : 0,
     );
 
     return this.get();

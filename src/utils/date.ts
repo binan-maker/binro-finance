@@ -164,6 +164,101 @@ export function formatDateTimeForDisplay(
   return `${formatDateForDisplay(dateStr, format)} · ${timeStr}`;
 }
 
+export function formatTransactionDateTimeRowLabel(
+  transactionDate: string,
+  createdAt: string,
+  format: DateFormatPreference = 'DD MMM YYYY',
+  referenceToday?: string,
+): string {
+  const dateLabel = formatRelativeDateLabel(transactionDate, format, referenceToday);
+  const parsed = new Date(createdAt);
+  if (Number.isNaN(parsed.getTime())) {
+    return dateLabel;
+  }
+  const hours24 = parsed.getHours();
+  const minutes = pad2(parsed.getMinutes());
+  const period = hours24 >= 12 ? 'PM' : 'AM';
+  const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  return `${dateLabel}, ${pad2(hours12)}:${minutes} ${period}`;
+}
+
 export function getMonthLabel(year: number, month: number): string {
   return `${MONTH_SHORT_NAMES[month - 1]} ${year}`;
+}
+
+export function normalizeDateRange(
+  rawStartDate: string,
+  rawEndDate: string,
+  fallbackDate?: string,
+): { startDate: string; endDate: string; wasReversed: boolean } {
+  const safeFallback = fallbackDate && isValidISODate(fallbackDate) ? fallbackDate : getTodayISODate();
+  const start = isValidISODate(rawStartDate) ? rawStartDate : safeFallback;
+  const end = isValidISODate(rawEndDate) ? rawEndDate : safeFallback;
+
+  if (start > end) {
+    return { startDate: end, endDate: start, wasReversed: true };
+  }
+  return { startDate: start, endDate: end, wasReversed: false };
+}
+
+export type AnyDatePreset =
+  | 'today'
+  | 'yesterday'
+  | 'last_7'
+  | 'last_30'
+  | 'this_month'
+  | 'this_year'
+  | 'all_time'
+  | 'custom';
+
+export function resolveDatePresetRange(params: {
+  preset: AnyDatePreset;
+  referenceToday?: string;
+  customStartDate?: string;
+  customEndDate?: string;
+  earliestTransactionDate?: string;
+}): { startDate: string | null; endDate: string | null } {
+  const today = params.referenceToday && isValidISODate(params.referenceToday)
+    ? params.referenceToday
+    : getTodayISODate();
+  const { year, month } = parseISODateParts(today);
+
+  switch (params.preset) {
+    case 'today':
+      return { startDate: today, endDate: today };
+    case 'yesterday': {
+      const yesterday = addDaysToISODate(today, -1);
+      return { startDate: yesterday, endDate: yesterday };
+    }
+    case 'last_7':
+      return { startDate: addDaysToISODate(today, -6), endDate: today };
+    case 'last_30':
+      return { startDate: addDaysToISODate(today, -29), endDate: today };
+    case 'this_month': {
+      const range = getMonthRange(year, month);
+      return { startDate: range.startDate, endDate: range.endDate };
+    }
+    case 'this_year': {
+      const range = getYearRange(year);
+      return { startDate: range.startDate, endDate: range.endDate };
+    }
+    case 'custom': {
+      const normalized = normalizeDateRange(
+        params.customStartDate ?? today,
+        params.customEndDate ?? today,
+        today,
+      );
+      return { startDate: normalized.startDate, endDate: normalized.endDate };
+    }
+    case 'all_time':
+    default:
+      if (params.earliestTransactionDate && isValidISODate(params.earliestTransactionDate)) {
+        return {
+          startDate:
+            params.earliestTransactionDate <= today ? params.earliestTransactionDate : today,
+          endDate: today,
+        };
+      }
+      return { startDate: null, endDate: null };
+  }
 }

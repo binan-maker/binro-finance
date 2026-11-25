@@ -144,7 +144,9 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
   const candidate = raw as Record<string, unknown>;
   if (
     !Number.isInteger(candidate.schemaVersion) ||
-    (candidate.schemaVersion !== 1 && candidate.schemaVersion !== 2)
+    (candidate.schemaVersion !== 1 &&
+      candidate.schemaVersion !== 2 &&
+      candidate.schemaVersion !== 3)
   ) {
     return { valid: false, error: 'Unsupported or missing backup schema version.' };
   }
@@ -224,6 +226,7 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
         !isNonEmptyString(rec.id) ||
         !isNonEmptyString(rec.name) ||
         typeof rec.color !== 'string' ||
+        (rec.isArchived !== undefined && typeof rec.isArchived !== 'boolean') ||
         !isNonEmptyString(rec.createdAt) ||
         !isNonEmptyString(rec.updatedAt)
       ) {

@@ -1,47 +1,44 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
 import {
-  AppButton,
   AppCard,
   AppScreen,
   EmptyState,
 } from '@/components/common';
-import {
-  CategoryDonutChart,
-  FinancialTrendLineChart,
-} from '@/components/reports/Charts';
+import { CategoryDonutChart } from '@/components/reports/Charts';
 import { TransactionRowItem } from '@/components/transactions/TransactionRowItem';
 import { Radius, Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { useResolvedColorScheme, useTheme } from '@/hooks/use-theme';
 import {
-  buildFinancialTrendPoints,
   calculatePeriodComparison,
   calculatePeriodSummary,
   getDashboardPeriodRanges,
   getDistinctTransactionCurrencies,
-  summarizeByCurrency,
   summarizeTransactions,
 } from '@/services/calculations/financialCalculations';
 import { useAppStore } from '@/store/app-store';
-import type { Transaction } from '@/types/models';
 import type { DashboardPeriod } from '@/types/reports';
-import { formatRelativeDateLabel, getTodayISODate } from '@/utils/date';
+import {
+  formatTransactionDateTimeRowLabel,
+  getTodayISODate,
+} from '@/utils/date';
 import { formatMoney } from '@/utils/money';
 
-const DASHBOARD_PERIODS: readonly { label: string; value: DashboardPeriod }[] = [
-  { label: 'This Week', value: 'this_week' },
-  { label: 'This Month', value: 'this_month' },
-  { label: 'Last 30 Days', value: 'last_30' },
-  { label: 'This Year', value: 'this_year' },
-  { label: 'All Time', value: 'all_time' },
+const CYCLING_PERIODS: readonly DashboardPeriod[] = [
+  'this_month',
+  'this_year',
+  'last_30',
+  'all_time',
 ];
 
 export default function HomeScreen() {
   const theme = useTheme();
+  const resolvedScheme = useResolvedColorScheme();
   const router = useRouter();
+  const { width } = useWindowDimensions();
 
   const settings = useAppStore((s) => s.settings);
   const categories = useAppStore((s) => s.categories);
@@ -51,10 +48,11 @@ export default function HomeScreen() {
 
   const [period, setPeriod] = useState<DashboardPeriod>('this_month');
   const [selectedCurrency, setSelectedCurrency] = useState<string | null>(null);
-  const [periodModalVisible, setPeriodModalVisible] = useState(false);
-  const [infoModalKind, setInfoModalKind] = useState<'income' | 'expense' | null>(null);
 
   const todayISO = getTodayISODate();
+  const isCompact = width < 360;
+  const isDark = resolvedScheme === 'dark';
+
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.isRead).length,
     [notifications],
@@ -122,49 +120,24 @@ export default function HomeScreen() {
     [transactions, activeCurrencyCode, periodRange],
   );
 
-  const trendPoints = useMemo(
-    () =>
-      buildFinancialTrendPoints({
-        transactions,
-        currencyCode: activeCurrencyCode,
-        openingBalanceMinor: settings.openingBalanceMinor,
-        openingBalanceCurrencyCode: settings.openingBalanceCurrencyCode,
-        startDate: periodRange.startDate,
-        endDate: periodRange.endDate,
-      }),
-    [
-      transactions,
-      activeCurrencyCode,
-      settings.openingBalanceMinor,
-      settings.openingBalanceCurrencyCode,
-      periodRange,
-    ],
-  );
-
-  const allCurrencySummaries = useMemo(
-    () => summarizeByCurrency(transactions, settings),
-    [transactions, settings],
-  );
-
   const categoryMap = useMemo(
     () => new Map(categories.map((c) => [c.id, c])),
     [categories],
   );
 
-  const recentGroups = useMemo(() => {
-    const recent = transactions.slice(0, 5);
-    const groups = new Map<string, Transaction[]>();
-    for (const tx of recent) {
-      const list = groups.get(tx.transactionDate) ?? [];
-      list.push(tx);
-      groups.set(tx.transactionDate, list);
-    }
-    return Array.from(groups.entries()).map(([date, list]) => ({
-      date,
-      label: formatRelativeDateLabel(date, settings.dateFormat, todayISO),
-      items: list,
-    }));
-  }, [transactions, settings.dateFormat, todayISO]);
+  const recentTransactions = useMemo(
+    () => transactions.slice(0, 5),
+    [transactions],
+  );
+
+  const cyclePeriod = () => {
+    const idx = CYCLING_PERIODS.indexOf(period);
+    const next = CYCLING_PERIODS[(idx + 1) % CYCLING_PERIODS.length];
+    setPeriod(next);
+  };
+
+  const hasPreviousPeriod =
+    periodRange.previousStartDate !== null && periodRange.previousEndDate !== null;
 
   const comparisonColor =
     periodComparison.direction === 'up'
@@ -173,29 +146,57 @@ export default function HomeScreen() {
         ? theme.expense
         : theme.textSecondary;
 
-  const comparisonIcon: keyof typeof Ionicons.glyphMap =
+  const comparisonArrow =
     periodComparison.direction === 'up'
-      ? 'arrow-up'
+      ? '↑'
       : periodComparison.direction === 'down'
-        ? 'arrow-down'
-        : 'remove';
+        ? '↓'
+        : '';
+
+  const formattedPct =
+    periodComparison.percentageChange !== null
+      ? `${Number(Math.abs(periodComparison.percentageChange).toFixed(2))}%`
+      : null;
+
+  const balanceCardBg = isDark ? '#1A1F24' : theme.surface;
+  const balanceCardBorder = isDark ? '#2A3138' : theme.border;
+  const periodTextColor = isDark ? '#FFFFFF' : theme.text;
+  const splitAmountColor = isDark ? '#FFFFFF' : theme.text;
+  const mutedLabelColor = isDark ? '#9CA3AF' : theme.textSecondary;
+  const viewAllBlue = isDark ? '#60A5FA' : '#2563EB';
+  const balanceIconBg = '#10B981';
+  const incomeIconBg = '#16A34A';
+  const expenseIconBg = '#E11D48';
 
   return (
     <AppScreen>
-      {/* Top Brand Header */}
+      {/* Top Header */}
       <View style={styles.brandHeader}>
-        <View style={styles.headerSideSpacer} />
+        <Pressable
+          onPress={() => router.push('/transactions/add')}
+          accessibilityRole="button"
+          accessibilityLabel="New Transaction"
+          style={({ pressed }) => [
+            styles.headerIconButton,
+            { backgroundColor: theme.surface, borderColor: theme.border },
+            pressed && styles.pressed,
+          ]}>
+          <Ionicons name="menu-outline" size={22} color={theme.text} />
+        </Pressable>
+
         <View style={styles.brandTitleWrap}>
           <Text style={[styles.brandPrimaryText, { color: theme.text }]}>BinRo </Text>
           <Text style={[styles.brandAccentText, { color: theme.primary }]}>Finance</Text>
         </View>
+
         <Pressable
           onPress={() => router.push('/notifications')}
           accessibilityRole="button"
           accessibilityLabel="Notifications"
-          style={[
-            styles.bellButton,
+          style={({ pressed }) => [
+            styles.headerIconButton,
             { backgroundColor: theme.surface, borderColor: theme.border },
+            pressed && styles.pressed,
           ]}>
           <Ionicons name="notifications-outline" size={20} color={theme.text} />
           {unreadCount > 0 ? (
@@ -236,131 +237,185 @@ export default function HomeScreen() {
         </ScrollView>
       ) : null}
 
-      {/* Total Balance + Trend Card */}
-      <AppCard>
+      {/* Total Balance Card */}
+      <AppCard
+        style={[
+          styles.balanceCard,
+          {
+            backgroundColor: balanceCardBg,
+            borderColor: balanceCardBorder,
+          },
+        ]}>
         <View style={styles.cardTopRow}>
-          <Text style={[styles.cardLabel, { color: theme.textSecondary }]}>
+          <Text style={[styles.cardLabel, { color: periodTextColor }]}>
             Total Balance
           </Text>
           <Pressable
-            onPress={() => setPeriodModalVisible(true)}
+            onPress={cyclePeriod}
+            hitSlop={10}
             accessibilityRole="button"
-            style={[
-              styles.periodPill,
-              { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
+            accessibilityLabel={`Period: ${periodRange.label}. Tap to switch period.`}
+            style={({ pressed }) => [
+              styles.periodSelectorRow,
+              pressed && styles.pressed,
             ]}>
-            <Text style={[styles.periodPillText, { color: theme.text }]}>
+            <Text style={[styles.periodSelectorText, { color: periodTextColor }]}>
               {periodRange.label}
             </Text>
-            <Ionicons name="chevron-down" size={14} color={theme.textSecondary} />
+            <Ionicons name="chevron-down" size={14} color={periodTextColor} />
           </Pressable>
         </View>
 
         <Text
-          style={[styles.balanceValue, { color: theme.text }]}
+          style={[
+            styles.balanceValue,
+            {
+              color: theme.text,
+              fontSize: isCompact ? 28 : 34,
+            },
+          ]}
           numberOfLines={1}
-          adjustsFontSizeToFit>
+          adjustsFontSizeToFit
+          minimumFontScale={0.55}>
           {formatMoney(overallSummary.currentBalanceMinor, activeCurrencyCode, {
             catalog: currencies,
+            symbolSpace: true,
           })}
         </Text>
 
-        <View style={styles.comparisonRow}>
-          <View
-            style={[
-              styles.comparisonBadge,
-              {
-                backgroundColor:
-                  periodComparison.direction === 'up'
-                    ? theme.incomeSoft
-                    : periodComparison.direction === 'down'
-                      ? theme.expenseSoft
-                      : theme.surfaceElevated,
-              },
-            ]}>
-            <Ionicons name={comparisonIcon} size={13} color={comparisonColor} />
-            <Text style={[styles.comparisonPct, { color: comparisonColor }]}>
-              {periodComparison.percentageChange !== null
-                ? `${Math.abs(periodComparison.percentageChange).toFixed(1)}%`
-                : periodComparison.currentValueMinor === 0
-                  ? '0.0%'
-                  : 'New'}
-            </Text>
+        <View style={styles.balanceBottomRow}>
+          <View style={styles.comparisonRow}>
+            {hasPreviousPeriod ? (
+              formattedPct !== null ? (
+                <>
+                  <Text style={[styles.comparisonMetric, { color: comparisonColor }]}>
+                    {comparisonArrow ? `${comparisonArrow} ` : ''}
+                    {formattedPct}
+                  </Text>
+                  <Text
+                    style={[styles.comparisonLabel, { color: mutedLabelColor }]}
+                    numberOfLines={1}>
+                    {periodComparison.comparisonLabel}
+                  </Text>
+                </>
+              ) : periodComparison.currentValueMinor === 0 ? (
+                <>
+                  <Text style={[styles.comparisonMetric, { color: mutedLabelColor }]}>
+                    0%
+                  </Text>
+                  <Text
+                    style={[styles.comparisonLabel, { color: mutedLabelColor }]}
+                    numberOfLines={1}>
+                    {periodComparison.comparisonLabel}
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Text style={[styles.comparisonMetric, { color: comparisonColor }]}>
+                    {comparisonArrow}
+                  </Text>
+                  <Text
+                    style={[styles.comparisonLabel, { color: mutedLabelColor }]}
+                    numberOfLines={1}>
+                    No prior baseline {periodComparison.comparisonLabel}
+                  </Text>
+                </>
+              )
+            ) : (
+              <Text
+                style={[styles.comparisonLabel, { color: mutedLabelColor }]}
+                numberOfLines={1}>
+                {periodComparison.comparisonLabel}
+              </Text>
+            )}
           </View>
-          <Text style={[styles.comparisonLabel, { color: theme.textSecondary }]}>
-            {periodComparison.comparisonLabel}
-          </Text>
-        </View>
 
-        <View style={styles.trendContainer}>
-          <FinancialTrendLineChart
-            points={trendPoints}
-            currencyCode={activeCurrencyCode}
-            catalog={currencies}
-          />
+          <View style={[styles.balanceIconSquare, { backgroundColor: balanceIconBg }]}>
+            <Ionicons name="stats-chart" size={18} color="#FFFFFF" />
+          </View>
         </View>
       </AppCard>
 
-      {/* Side-by-side Total Income & Total Expense Cards */}
+      {/* Equal-Sized Horizontal Total Income & Total Expense Cards */}
       <View style={styles.splitRow}>
-        <AppCard style={styles.splitCard}>
-          <View style={styles.splitTopRow}>
-            <View style={[styles.flowIconBadge, { backgroundColor: theme.incomeSoft }]}>
-              <Ionicons name="arrow-down" size={16} color={theme.income} />
-            </View>
-            <Pressable
-              onPress={() => setInfoModalKind('income')}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Income breakdown">
+        <AppCard style={[styles.splitCard, isCompact && styles.splitCardCompact]}>
+          <View style={styles.splitHorizontal}>
+            <View
+              style={[
+                styles.flowIconSquare,
+                isCompact && styles.flowIconSquareCompact,
+                { backgroundColor: incomeIconBg },
+              ]}>
               <Ionicons
-                name="information-circle-outline"
-                size={18}
-                color={theme.textMuted}
+                name="wallet"
+                size={isCompact ? 18 : 20}
+                color="#FFFFFF"
               />
-            </Pressable>
+            </View>
+            <View style={styles.splitTextCol}>
+              <Text
+                style={[styles.splitLabel, { color: mutedLabelColor }]}
+                numberOfLines={1}>
+                Total Income
+              </Text>
+              <Text
+                style={[
+                  styles.splitAmount,
+                  {
+                    color: splitAmountColor,
+                    fontSize: isCompact ? 15 : 17,
+                  },
+                ]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.45}>
+                {formatMoney(periodSummary.totalIncomeMinor, activeCurrencyCode, {
+                  catalog: currencies,
+                  symbolSpace: true,
+                })}
+              </Text>
+            </View>
           </View>
-          <Text style={[styles.splitLabel, { color: theme.textSecondary }]}>
-            Total Income
-          </Text>
-          <Text
-            style={[styles.splitAmount, { color: theme.income }]}
-            numberOfLines={1}
-            adjustsFontSizeToFit>
-            {formatMoney(periodSummary.totalIncomeMinor, activeCurrencyCode, {
-              catalog: currencies,
-            })}
-          </Text>
         </AppCard>
 
-        <AppCard style={styles.splitCard}>
-          <View style={styles.splitTopRow}>
-            <View style={[styles.flowIconBadge, { backgroundColor: theme.expenseSoft }]}>
-              <Ionicons name="arrow-up" size={16} color={theme.expense} />
-            </View>
-            <Pressable
-              onPress={() => setInfoModalKind('expense')}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Expense breakdown">
+        <AppCard style={[styles.splitCard, isCompact && styles.splitCardCompact]}>
+          <View style={styles.splitHorizontal}>
+            <View
+              style={[
+                styles.flowIconSquare,
+                isCompact && styles.flowIconSquareCompact,
+                { backgroundColor: expenseIconBg },
+              ]}>
               <Ionicons
-                name="information-circle-outline"
-                size={18}
-                color={theme.textMuted}
+                name="wallet-outline"
+                size={isCompact ? 18 : 20}
+                color="#FFFFFF"
               />
-            </Pressable>
+            </View>
+            <View style={styles.splitTextCol}>
+              <Text
+                style={[styles.splitLabel, { color: mutedLabelColor }]}
+                numberOfLines={1}>
+                Total Expense
+              </Text>
+              <Text
+                style={[
+                  styles.splitAmount,
+                  {
+                    color: splitAmountColor,
+                    fontSize: isCompact ? 15 : 17,
+                  },
+                ]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.45}>
+                {formatMoney(periodSummary.totalExpensesMinor, activeCurrencyCode, {
+                  catalog: currencies,
+                  symbolSpace: true,
+                })}
+              </Text>
+            </View>
           </View>
-          <Text style={[styles.splitLabel, { color: theme.textSecondary }]}>
-            Total Expense
-          </Text>
-          <Text
-            style={[styles.splitAmount, { color: theme.expense }]}
-            numberOfLines={1}
-            adjustsFontSizeToFit>
-            {formatMoney(periodSummary.totalExpensesMinor, activeCurrencyCode, {
-              catalog: currencies,
-            })}
-          </Text>
         </AppCard>
       </View>
 
@@ -384,7 +439,7 @@ export default function HomeScreen() {
         />
       </AppCard>
 
-      {/* Recent Transactions */}
+      {/* Recent Transactions (Flat 5-item list with inline date & time subtitle) */}
       <View style={styles.recentHeader}>
         <Text style={[styles.sectionTitle, { color: theme.text }]}>
           Recent Transactions
@@ -394,168 +449,36 @@ export default function HomeScreen() {
             onPress={() => router.push('/(tabs)/transactions')}
             hitSlop={8}
             accessibilityRole="button">
-            <Text style={[styles.viewAllText, { color: theme.primary }]}>View All</Text>
+            <Text style={[styles.viewAllText, { color: viewAllBlue }]}>View All</Text>
           </Pressable>
         ) : null}
       </View>
 
-      {recentGroups.length === 0 ? (
+      {recentTransactions.length === 0 ? (
         <EmptyState
           icon="receipt-outline"
           title="No transactions recorded yet"
           description="Tap the green + button below to record your first income or expense."
         />
       ) : (
-        <View style={styles.recentGroups}>
-          {recentGroups.map((group) => (
-            <View key={group.date} style={styles.recentGroup}>
-              <Text style={[styles.dateGroupLabel, { color: theme.textSecondary }]}>
-                {group.label}
-              </Text>
-              <View style={styles.groupList}>
-                {group.items.map((tx) => (
-                  <TransactionRowItem
-                    key={tx.id}
-                    transaction={tx}
-                    category={tx.categoryId ? categoryMap.get(tx.categoryId) : undefined}
-                    catalog={currencies}
-                    onPress={() => router.push(`/transactions/${tx.id}`)}
-                  />
-                ))}
-              </View>
-            </View>
+        <View style={styles.recentList}>
+          {recentTransactions.map((tx) => (
+            <TransactionRowItem
+              key={tx.id}
+              transaction={tx}
+              category={tx.categoryId ? categoryMap.get(tx.categoryId) : undefined}
+              catalog={currencies}
+              subtitle={formatTransactionDateTimeRowLabel(
+                tx.transactionDate,
+                tx.createdAt,
+                settings.dateFormat,
+                todayISO,
+              )}
+              onPress={() => router.push(`/transactions/${tx.id}`)}
+            />
           ))}
         </View>
       )}
-
-      {/* Period Selector Modal */}
-      <Modal
-        visible={periodModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPeriodModalVisible(false)}>
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setPeriodModalVisible(false)}>
-          <Pressable
-            style={[
-              styles.modalCard,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-            onPress={(e) => e.stopPropagation()}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>
-              Select Period
-            </Text>
-            <View style={styles.periodOptionList}>
-              {DASHBOARD_PERIODS.map((opt) => {
-                const selected = opt.value === period;
-                return (
-                  <Pressable
-                    key={opt.value}
-                    onPress={() => {
-                      setPeriod(opt.value);
-                      setPeriodModalVisible(false);
-                    }}
-                    style={[
-                      styles.periodOptionRow,
-                      {
-                        backgroundColor: selected ? theme.primarySoft : 'transparent',
-                        borderColor: selected ? theme.primary : theme.border,
-                      },
-                    ]}>
-                    <Text
-                      style={[
-                        styles.periodOptionText,
-                        { color: selected ? theme.primary : theme.text },
-                      ]}>
-                      {opt.label}
-                    </Text>
-                    {selected ? (
-                      <Ionicons name="checkmark" size={18} color={theme.primary} />
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* Income / Expense Full Value Breakdown Modal */}
-      <Modal
-        visible={infoModalKind !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setInfoModalKind(null)}>
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setInfoModalKind(null)}>
-          <Pressable
-            style={[
-              styles.modalCard,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}
-            onPress={(e) => e.stopPropagation()}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>
-              {infoModalKind === 'income' ? 'Total Income' : 'Total Expense'} ({periodRange.label})
-            </Text>
-            <Text style={[styles.infoSub, { color: theme.textSecondary }]}>
-              Active currency ({activeCurrencyCode}):
-            </Text>
-            <Text
-              style={[
-                styles.infoBigValue,
-                {
-                  color:
-                    infoModalKind === 'income' ? theme.income : theme.expense,
-                },
-              ]}>
-              {formatMoney(
-                infoModalKind === 'income'
-                  ? periodSummary.totalIncomeMinor
-                  : periodSummary.totalExpensesMinor,
-                activeCurrencyCode,
-                { catalog: currencies },
-              )}
-            </Text>
-
-            {allCurrencySummaries.length > 1 ? (
-              <View style={styles.currencyBreakdown}>
-                <Text style={[styles.infoSub, { color: theme.textSecondary }]}>
-                  All recorded currencies (all time, uncombined):
-                </Text>
-                {allCurrencySummaries.map((cs) => {
-                  const val =
-                    infoModalKind === 'income'
-                      ? cs.totalIncomeMinor
-                      : cs.totalExpensesMinor;
-                  return (
-                    <View key={cs.currencyCode} style={styles.breakdownRow}>
-                      <Text style={[styles.breakdownCode, { color: theme.text }]}>
-                        {cs.currencyCode}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.breakdownAmt,
-                          {
-                            color:
-                              infoModalKind === 'income'
-                                ? theme.income
-                                : theme.expense,
-                          },
-                        ]}>
-                        {formatMoney(val, cs.currencyCode, { catalog: currencies })}
-                      </Text>
-                    </View>
-                  );
-                })}
-              </View>
-            ) : null}
-
-            <AppButton label="Close" onPress={() => setInfoModalKind(null)} fullWidth />
-          </Pressable>
-        </Pressable>
-      </Modal>
     </AppScreen>
   );
 }
@@ -567,8 +490,16 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: Spacing.one,
   },
-  headerSideSpacer: {
+  headerIconButton: {
     width: 40,
+    height: 40,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pressed: {
+    opacity: 0.72,
   },
   brandTitleWrap: {
     flexDirection: 'row',
@@ -583,14 +514,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '700',
     letterSpacing: -0.4,
-  },
-  bellButton: {
-    width: 40,
-    height: 40,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   unreadDot: {
     position: 'absolute',
@@ -614,6 +537,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  balanceCard: {
+    gap: Spacing.two,
+  },
   cardTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -624,73 +550,93 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-  periodPill: {
+  periodSelectorRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: Spacing.two + 4,
-    paddingVertical: 6,
-    borderRadius: Radius.full,
-    borderWidth: 1,
+    gap: 4,
   },
-  periodPillText: {
-    fontSize: 12,
+  periodSelectorText: {
+    fontSize: 13,
     fontWeight: '600',
   },
   balanceValue: {
-    fontSize: 34,
     fontWeight: '800',
     letterSpacing: -0.6,
   },
-  comparisonRow: {
+  balanceBottomRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
     gap: Spacing.two,
   },
-  comparisonBadge: {
+  comparisonRow: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: Radius.full,
+    gap: 6,
+    flexWrap: 'wrap',
   },
-  comparisonPct: {
-    fontSize: 12,
+  comparisonMetric: {
+    fontSize: 13,
     fontWeight: '700',
   },
   comparisonLabel: {
-    fontSize: 12,
+    fontSize: 13,
+    fontWeight: '500',
+    flexShrink: 1,
   },
-  trendContainer: {
-    marginTop: Spacing.one,
+  balanceIconSquare: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   splitRow: {
     flexDirection: 'row',
+    alignItems: 'stretch',
     gap: Spacing.two + 2,
   },
   splitCard: {
     flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    paddingVertical: Spacing.two + 6,
+    paddingHorizontal: Spacing.two + 4,
   },
-  splitTopRow: {
+  splitCardCompact: {
+    paddingVertical: Spacing.two + 4,
+    paddingHorizontal: Spacing.two + 2,
+  },
+  splitHorizontal: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: Spacing.two + 2,
   },
-  flowIconBadge: {
-    width: 30,
-    height: 30,
-    borderRadius: Radius.full,
+  flowIconSquare: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
+  },
+  flowIconSquareCompact: {
+    width: 34,
+    height: 34,
+  },
+  splitTextCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   splitLabel: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   splitAmount: {
-    fontSize: 19,
-    fontWeight: '800',
+    fontWeight: '700',
   },
   sectionTitle: {
     fontSize: 16,
@@ -709,76 +655,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  recentGroups: {
-    gap: Spacing.three,
-  },
-  recentGroup: {
-    gap: Spacing.one + 2,
-  },
-  dateGroupLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  groupList: {
+  recentList: {
     gap: Spacing.two,
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing.four,
-  },
-  modalCard: {
-    width: '100%',
-    maxWidth: 380,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    padding: Spacing.four,
-    gap: Spacing.three,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  periodOptionList: {
-    gap: Spacing.two,
-  },
-  periodOptionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two + 4,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-  },
-  periodOptionText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  infoSub: {
-    fontSize: 13,
-  },
-  infoBigValue: {
-    fontSize: 26,
-    fontWeight: '800',
-  },
-  currencyBreakdown: {
-    gap: Spacing.two,
-    paddingTop: Spacing.one,
-  },
-  breakdownRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  breakdownCode: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  breakdownAmt: {
-    fontSize: 14,
-    fontWeight: '700',
   },
 });

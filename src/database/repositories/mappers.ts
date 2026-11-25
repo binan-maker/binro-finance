@@ -62,6 +62,7 @@ export function mapTagRow(row: TagRow): Tag {
     id: row.id,
     name: row.name,
     color: row.color ?? '#10B981',
+    isArchived: row.is_archived === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -116,6 +117,10 @@ export function mapSettingsRow(row: AppSettingsRow): AppSettings {
     theme: row.theme,
     dateFormat: row.date_format,
     onboardingCompleted: row.onboarding_completed === 1,
+    profileName: row.profile_name ?? null,
+    profileBio: row.profile_bio ?? null,
+    profileAvatar: row.profile_avatar ?? null,
+    currencyInitialized: row.currency_initialized === 1,
   };
 }
 

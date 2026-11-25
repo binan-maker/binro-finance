@@ -1,4 +1,5 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import Svg, {
   Circle,
   Defs,
@@ -6,14 +7,20 @@ import Svg, {
   Line,
   LinearGradient,
   Path,
-  Rect,
   Stop,
 } from 'react-native-svg';
 
 import type { CurrencyConfig } from '@/constants/currencies';
-import { Spacing } from '@/constants/theme';
+import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import type { CategoryBreakdownItem, DailyTotalItem, TrendPoint } from '@/types/reports';
+import type {
+  CategoryBreakdownItem,
+  ComparisonBucket,
+  DailyTotalItem,
+  SpendingTrendPoint,
+  SpendingTrendSeries,
+  TrendPoint,
+} from '@/types/reports';
 import { formatMoney } from '@/utils/money';
 
 interface FinancialTrendLineChartProps {
@@ -154,6 +161,7 @@ interface CategoryDonutChartProps {
   catalog?: readonly CurrencyConfig[];
   maxLegendItems?: number;
   compact?: boolean;
+  hideLegend?: boolean;
 }
 
 export function CategoryDonutChart({
@@ -163,10 +171,11 @@ export function CategoryDonutChart({
   catalog,
   maxLegendItems = 5,
   compact = false,
+  hideLegend = false,
 }: CategoryDonutChartProps) {
   const theme = useTheme();
-  const size = compact ? 118 : 140;
-  const strokeWidth = compact ? 16 : 20;
+  const size = compact ? 118 : 148;
+  const strokeWidth = compact ? 16 : 22;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
 
@@ -178,7 +187,6 @@ export function CategoryDonutChart({
     );
   }
 
-  // Group overflow categories into "Others" so card stays compact and complete
   let displayItems: CategoryBreakdownItem[] = [];
   if (items.length <= maxLegendItems) {
     displayItems = [...items];
@@ -227,7 +235,7 @@ export function CategoryDonutChart({
   );
 
   return (
-    <View style={styles.donutLayout}>
+    <View style={[styles.donutLayout, hideLegend && styles.donutCentered]}>
       <View style={[styles.donutWrap, { width: size, height: size }]}>
         <Svg width={size} height={size}>
           <G rotation="-90" origin={`${size / 2}, ${size / 2}`}>
@@ -268,18 +276,271 @@ export function CategoryDonutChart({
         </View>
       </View>
 
-      <View style={styles.legendList}>
-        {displayItems.map((item) => (
-          <View key={item.categoryId ?? item.categoryName} style={styles.legendRow}>
-            <View style={[styles.legendDot, { backgroundColor: item.color }]} />
-            <Text style={[styles.legendName, { color: theme.text }]} numberOfLines={1}>
-              {item.categoryName}
-            </Text>
-            <Text style={[styles.legendAmt, { color: theme.textSecondary }]} numberOfLines={1}>
-              {formatMoney(item.totalMinor, currencyCode, { catalog })}
+      {!hideLegend ? (
+        <View style={styles.legendList}>
+          {displayItems.map((item) => (
+            <View key={item.categoryId ?? item.categoryName} style={styles.legendRow}>
+              <View style={[styles.legendDot, { backgroundColor: item.color }]} />
+              <Text style={[styles.legendName, { color: theme.text }]} numberOfLines={1}>
+                {item.categoryName}
+              </Text>
+              <Text
+                style={[styles.legendAmt, { color: theme.textSecondary }]}
+                numberOfLines={1}>
+                {formatMoney(item.totalMinor, currencyCode, { catalog })}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+interface IncomeExpenseComparisonChartProps {
+  buckets: readonly ComparisonBucket[];
+  currencyCode: string;
+  catalog?: readonly CurrencyConfig[];
+}
+
+export function IncomeExpenseComparisonChart({
+  buckets,
+  currencyCode,
+  catalog,
+}: IncomeExpenseComparisonChartProps) {
+  const theme = useTheme();
+  const { width } = useWindowDimensions();
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  const hasData = buckets.some((b) => b.incomeMinor > 0 || b.expenseMinor > 0);
+  if (buckets.length === 0 || !hasData) {
+    return (
+      <Text style={[styles.emptyChartText, { color: theme.textSecondary }]}>
+        No income or expense activity in this period to compare.
+      </Text>
+    );
+  }
+
+  const maxVal = Math.max(
+    ...buckets.map((b) => Math.max(b.incomeMinor, b.expenseMinor)),
+    1,
+  );
+  const chartHeight = 128;
+  const availableWidth = Math.max(width - 80, 240);
+  const groupMinWidth = buckets.length <= 8 ? availableWidth / buckets.length : 42;
+  const labelStride = Math.max(1, Math.ceil(buckets.length / 7));
+
+  const selectedBucket =
+    buckets.find((b) => b.key === selectedKey) ??
+    [...buckets].reverse().find((b) => b.incomeMinor > 0 || b.expenseMinor > 0) ??
+    buckets[0];
+
+  return (
+    <View style={styles.comparisonChartWrap}>
+      {/* Legend + Active Bucket Tooltip */}
+      <View style={styles.comparisonTopMeta}>
+        <View style={styles.legendPills}>
+          <View style={styles.miniLegend}>
+            <View style={[styles.miniDot, { backgroundColor: theme.income }]} />
+            <Text style={[styles.miniLegendText, { color: theme.textSecondary }]}>
+              Income
             </Text>
           </View>
-        ))}
+          <View style={styles.miniLegend}>
+            <View style={[styles.miniDot, { backgroundColor: theme.expense }]} />
+            <Text style={[styles.miniLegendText, { color: theme.textSecondary }]}>
+              Expenses
+            </Text>
+          </View>
+        </View>
+
+        {selectedBucket ? (
+          <View
+            style={[
+              styles.tooltipBadge,
+              { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
+            ]}>
+            <Text style={[styles.tooltipTitle, { color: theme.text }]}>
+              {selectedBucket.label}:
+            </Text>
+            <Text style={[styles.tooltipVal, { color: theme.income }]}>
+              +{formatMoney(selectedBucket.incomeMinor, currencyCode, { catalog })}
+            </Text>
+            <Text style={[styles.tooltipVal, { color: theme.expense }]}>
+              -{formatMoney(selectedBucket.expenseMinor, currencyCode, { catalog })}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={buckets.length > 8}
+        contentContainerStyle={[
+          styles.groupedBarsScroll,
+          { minWidth: availableWidth },
+        ]}>
+        {buckets.map((bucket, idx) => {
+          const isSelected = selectedBucket?.key === bucket.key;
+          const incH =
+            bucket.incomeMinor > 0
+              ? Math.max(5, Math.round((bucket.incomeMinor / maxVal) * (chartHeight - 10)))
+              : 2;
+          const expH =
+            bucket.expenseMinor > 0
+              ? Math.max(5, Math.round((bucket.expenseMinor / maxVal) * (chartHeight - 10)))
+              : 2;
+          const showLabel =
+            idx === 0 || idx === buckets.length - 1 || idx % labelStride === 0;
+
+          return (
+            <Pressable
+              key={bucket.key}
+              onPress={() => setSelectedKey(bucket.key)}
+              accessibilityRole="button"
+              accessibilityLabel={`${bucket.label}: income ${formatMoney(bucket.incomeMinor, currencyCode, { catalog })}, expense ${formatMoney(bucket.expenseMinor, currencyCode, { catalog })}`}
+              style={[
+                styles.bucketCol,
+                { width: groupMinWidth },
+                isSelected && {
+                  backgroundColor: `${theme.surfaceElevated}`,
+                  borderRadius: Radius.sm,
+                },
+              ]}>
+              <View style={[styles.pairBarsWrap, { height: chartHeight }]}>
+                <View
+                  style={[
+                    styles.singleBar,
+                    {
+                      height: incH,
+                      backgroundColor:
+                        bucket.incomeMinor > 0 ? theme.income : theme.border,
+                    },
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.singleBar,
+                    {
+                      height: expH,
+                      backgroundColor:
+                        bucket.expenseMinor > 0 ? theme.expense : theme.border,
+                    },
+                  ]}
+                />
+              </View>
+              <Text
+                style={[
+                  styles.bucketLabel,
+                  {
+                    color: isSelected ? theme.text : theme.textMuted,
+                    opacity: showLabel || isSelected ? 1 : 0,
+                  },
+                ]}
+                numberOfLines={1}>
+                {bucket.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+interface DynamicSpendingTrendChartProps {
+  trend: SpendingTrendSeries;
+  currencyCode: string;
+  catalog?: readonly CurrencyConfig[];
+}
+
+export function DynamicSpendingTrendChart({
+  trend,
+  currencyCode,
+  catalog,
+}: DynamicSpendingTrendChartProps) {
+  const theme = useTheme();
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  const hasSpending = trend.points.some((p) => p.amountMinor > 0);
+  if (trend.points.length === 0 || !hasSpending) {
+    return (
+      <Text style={[styles.emptyChartText, { color: theme.textSecondary }]}>
+        No expense activity recorded in this period.
+      </Text>
+    );
+  }
+
+  const maxAmount = Math.max(...trend.points.map((p) => p.amountMinor), 1);
+  const chartHeight = 112;
+  const labelStride = Math.max(1, Math.ceil(trend.points.length / 6));
+
+  const peakPoint = trend.points.reduce(
+    (best, pt) => (pt.amountMinor > best.amountMinor ? pt : best),
+    trend.points[0],
+  );
+  const selectedPoint =
+    trend.points.find((p) => p.key === selectedKey) ?? peakPoint;
+
+  return (
+    <View style={styles.trendWrap}>
+      <View style={styles.trendMetaRow}>
+        <Text style={[styles.trendCaption, { color: theme.textSecondary }]}>
+          {trend.subtitle}
+        </Text>
+        <Text style={[styles.trendPeak, { color: theme.text }]}>
+          {selectedPoint.detailLabel}:{' '}
+          {formatMoney(selectedPoint.amountMinor, currencyCode, { catalog })}
+        </Text>
+      </View>
+
+      <View style={styles.trendBarsRow}>
+        {trend.points.map((pt) => {
+          const barH =
+            pt.amountMinor > 0
+              ? Math.max(5, Math.round((pt.amountMinor / maxAmount) * (chartHeight - 10)))
+              : 3;
+          const isSelected = selectedPoint.key === pt.key;
+          return (
+            <Pressable
+              key={pt.key}
+              onPress={() => setSelectedKey(pt.key)}
+              accessibilityRole="button"
+              accessibilityLabel={`${pt.detailLabel}: ${formatMoney(pt.amountMinor, currencyCode, { catalog })}`}
+              style={styles.trendBarSlot}>
+              <View style={[styles.trendBarTrack, { height: chartHeight }]}>
+                <View
+                  style={[
+                    styles.trendBarFill,
+                    {
+                      height: barH,
+                      backgroundColor:
+                        pt.amountMinor === 0
+                          ? theme.border
+                          : isSelected
+                            ? theme.primaryBright
+                            : theme.primary,
+                      opacity: pt.amountMinor === 0 ? 0.5 : isSelected ? 1 : 0.8,
+                    },
+                  ]}
+                />
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <View style={styles.trendAxisLabels}>
+        {trend.points.map((pt, idx) => {
+          const show =
+            idx === 0 || idx === trend.points.length - 1 || idx % labelStride === 0;
+          if (!show) return null;
+          return (
+            <Text key={pt.key} style={[styles.axisText, { color: theme.textMuted }]}>
+              {pt.label}
+            </Text>
+          );
+        })}
       </View>
     </View>
   );
@@ -298,76 +559,19 @@ export function IncomeExpenseBarChart({
   currencyCode,
   catalog,
 }: IncomeExpenseBarChartProps) {
-  const theme = useTheme();
-  const maxVal = Math.max(incomeMinor, expenseMinor, 1);
-  const chartHeight = 108;
-  const barWidth = 44;
-
-  const incomeHeight = Math.max(
-    incomeMinor > 0 ? 6 : 0,
-    Math.round((incomeMinor / maxVal) * chartHeight),
-  );
-  const expenseHeight = Math.max(
-    expenseMinor > 0 ? 6 : 0,
-    Math.round((expenseMinor / maxVal) * chartHeight),
-  );
-
   return (
-    <View style={styles.barComparisonWrap}>
-      <View style={styles.barColumn}>
-        <Text style={[styles.barValue, { color: theme.income }]}>
-          {formatMoney(incomeMinor, currencyCode, { catalog })}
-        </Text>
-        <Svg width={barWidth} height={chartHeight}>
-          <Rect
-            x={0}
-            y={0}
-            width={barWidth}
-            height={chartHeight}
-            rx={10}
-            fill={theme.surfaceElevated}
-          />
-          {incomeHeight > 0 ? (
-            <Rect
-              x={0}
-              y={chartHeight - incomeHeight}
-              width={barWidth}
-              height={incomeHeight}
-              rx={10}
-              fill={theme.income}
-            />
-          ) : null}
-        </Svg>
-        <Text style={[styles.barLabel, { color: theme.textSecondary }]}>Income</Text>
-      </View>
-
-      <View style={styles.barColumn}>
-        <Text style={[styles.barValue, { color: theme.expense }]}>
-          {formatMoney(expenseMinor, currencyCode, { catalog })}
-        </Text>
-        <Svg width={barWidth} height={chartHeight}>
-          <Rect
-            x={0}
-            y={0}
-            width={barWidth}
-            height={chartHeight}
-            rx={10}
-            fill={theme.surfaceElevated}
-          />
-          {expenseHeight > 0 ? (
-            <Rect
-              x={0}
-              y={chartHeight - expenseHeight}
-              width={barWidth}
-              height={expenseHeight}
-              rx={10}
-              fill={theme.expense}
-            />
-          ) : null}
-        </Svg>
-        <Text style={[styles.barLabel, { color: theme.textSecondary }]}>Expenses</Text>
-      </View>
-    </View>
+    <IncomeExpenseComparisonChart
+      buckets={[
+        {
+          key: 'total',
+          label: 'Period',
+          incomeMinor,
+          expenseMinor,
+        },
+      ]}
+      currencyCode={currencyCode}
+      catalog={catalog}
+    />
   );
 }
 
@@ -382,82 +586,22 @@ export function DailySpendingTrendChart({
   currencyCode,
   catalog,
 }: DailySpendingTrendChartProps) {
-  const theme = useTheme();
-  if (dailyTotals.length === 0) {
-    return (
-      <Text style={[styles.emptyChartText, { color: theme.textSecondary }]}>
-        No daily data available for this range.
-      </Text>
-    );
-  }
-
-  const bucketSize = dailyTotals.length > 31 ? Math.ceil(dailyTotals.length / 24) : 1;
-  const buckets: { label: string; expenseMinor: number }[] = [];
-
-  for (let i = 0; i < dailyTotals.length; i += bucketSize) {
-    const slice = dailyTotals.slice(i, i + bucketSize);
-    const total = slice.reduce((sum, item) => sum + item.expenseMinor, 0);
-    buckets.push({
-      label: slice[0].date.slice(5),
-      expenseMinor: total,
-    });
-  }
-
-  const maxExpense = Math.max(...buckets.map((b) => b.expenseMinor), 1);
-  const width = 300;
-  const height = 110;
-  const gap = 3;
-  const barW = Math.max(3, (width - gap * (buckets.length - 1)) / buckets.length);
-
+  const points: SpendingTrendPoint[] = dailyTotals.map((d) => ({
+    key: d.date,
+    label: d.date.slice(5),
+    detailLabel: d.date,
+    amountMinor: d.expenseMinor,
+  }));
   return (
-    <View style={styles.trendWrap}>
-      <View style={styles.trendMetaRow}>
-        <Text style={[styles.trendCaption, { color: theme.textSecondary }]}>
-          {bucketSize > 1 ? `Grouped (${bucketSize}-day buckets)` : 'Daily expense trend'}
-        </Text>
-        <Text style={[styles.trendPeak, { color: theme.text }]}>
-          Peak:{' '}
-          {formatMoney(
-            maxExpense === 1 && buckets.every((b) => b.expenseMinor === 0)
-              ? 0
-              : maxExpense,
-            currencyCode,
-            { catalog },
-          )}
-        </Text>
-      </View>
-
-      <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
-        {buckets.map((bucket, idx) => {
-          const barH =
-            bucket.expenseMinor > 0
-              ? Math.max(4, Math.round((bucket.expenseMinor / maxExpense) * (height - 8)))
-              : 2;
-          const x = idx * (barW + gap);
-          const y = height - barH;
-          return (
-            <Rect
-              key={`${bucket.label}-${idx}`}
-              x={x}
-              y={y}
-              width={barW}
-              height={barH}
-              rx={2}
-              fill={bucket.expenseMinor > 0 ? theme.primary : theme.border}
-            />
-          );
-        })}
-      </Svg>
-
-      <View style={styles.trendAxisLabels}>
-        <Text style={[styles.axisText, { color: theme.textMuted }]}>
-          {dailyTotals[0].date}
-        </Text>
-        <Text style={[styles.axisText, { color: theme.textMuted }]}>
-          {dailyTotals[dailyTotals.length - 1].date}
-        </Text>
-      </View>
-    </View>
+    <DynamicSpendingTrendChart
+      trend={{
+        mode: 'daily',
+        subtitle: 'Daily expense trend',
+        points,
+      }}
+      currencyCode={currencyCode}
+      catalog={catalog}
+    />
   );
 }
 
@@ -478,13 +622,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.three,
   },
+  donutCentered: {
+    justifyContent: 'center',
+  },
   donutWrap: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   donutCenter: {
     position: 'absolute',
-    width: 76,
+    width: 78,
     alignItems: 'center',
   },
   donutCenterLabel: {
@@ -519,23 +666,76 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  barComparisonWrap: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'flex-end',
-    paddingVertical: Spacing.two,
-  },
-  barColumn: {
-    alignItems: 'center',
+  comparisonChartWrap: {
     gap: Spacing.two,
   },
-  barValue: {
-    fontSize: 13,
-    fontWeight: '700',
+  comparisonTopMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
   },
-  barLabel: {
+  legendPills: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
+  miniLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  miniDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+  },
+  miniLegendText: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  tooltipBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+  },
+  tooltipTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  tooltipVal: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  groupedBarsScroll: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingVertical: 4,
+  },
+  bucketCol: {
+    alignItems: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    gap: 6,
+  },
+  pairBarsWrap: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  singleBar: {
+    width: 10,
+    borderRadius: 4,
+  },
+  bucketLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   trendWrap: {
     gap: Spacing.two,
@@ -544,19 +744,42 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.two,
   },
   trendCaption: {
     fontSize: 12,
+    fontWeight: '500',
   },
   trendPeak: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  trendBarsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 3,
+  },
+  trendBarSlot: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  trendBarTrack: {
+    width: '100%',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
+  trendBarFill: {
+    width: '82%',
+    maxWidth: 18,
+    minWidth: 3,
+    borderRadius: 4,
   },
   trendAxisLabels: {
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
   axisText: {
-    fontSize: 11,
+    fontSize: 10,
+    fontWeight: '600',
   },
 });

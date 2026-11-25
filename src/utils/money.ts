@@ -74,17 +74,24 @@ export function formatMinorToMajorInput(
 export function formatMoney(
   amountMinor: number,
   currencyCode: string,
-  options?: { showSign?: boolean; catalog?: readonly CurrencyConfig[] },
+  options?: {
+    showSign?: boolean;
+    catalog?: readonly CurrencyConfig[];
+    symbolSpace?: boolean;
+  },
 ): string {
   const { symbol, minorUnits } = getCurrencyConfig(currencyCode, options?.catalog);
   const absMinor = Math.abs(Math.trunc(amountMinor));
   const scale = 10 ** minorUnits;
   const whole = Math.floor(absMinor / scale);
-  const frac = minorUnits > 0 ? String(absMinor % scale).padStart(minorUnits, '0') : '';
+  const fracMinor = minorUnits > 0 ? absMinor % scale : 0;
 
   const locale = currencyCode === 'INR' ? 'en-IN' : 'en-US';
   const formattedWhole = whole.toLocaleString(locale);
-  const valueText = minorUnits > 0 ? `${formattedWhole}.${frac}` : formattedWhole;
+  const valueText =
+    minorUnits > 0 && fracMinor !== 0
+      ? `${formattedWhole}.${String(fracMinor).padStart(minorUnits, '0')}`
+      : formattedWhole;
 
   let prefix = '';
   if (amountMinor < 0) {
@@ -93,6 +100,6 @@ export function formatMoney(
     prefix = '+';
   }
 
-  const spacer = symbol.length > 2 ? ' ' : '';
+  const spacer = options?.symbolSpace || symbol.length > 2 ? ' ' : '';
   return `${prefix}${symbol}${spacer}${valueText}`;
 }
