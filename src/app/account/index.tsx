@@ -21,21 +21,25 @@ import { getProfileInitials, PROFILE_AVATAR_COLOR } from '@/utils/profile';
 
 function getSyncStatusMeta(
   status: SyncStatus,
+  hasLastSynced: boolean,
   theme: ReturnType<typeof useTheme>,
 ): { label: string; color: string; bg: string } {
   switch (status) {
     case 'syncing':
       return { label: 'Syncing...', color: theme.primary, bg: theme.primarySoft };
-    case 'synced':
-      return { label: 'Synced', color: theme.income, bg: theme.primarySoft };
     case 'offline':
       return { label: 'Offline', color: theme.warning, bg: theme.surfaceElevated };
     case 'error':
       return { label: 'Sync Error', color: theme.danger, bg: theme.surfaceElevated };
+    case 'pending_link':
+      return { label: 'Pending Link', color: theme.warning, bg: theme.surfaceElevated };
     case 'needs_account_switch':
       return { label: 'Action Needed', color: theme.warning, bg: theme.surfaceElevated };
     case 'idle':
     default:
+      if (hasLastSynced) {
+        return { label: 'Synced', color: theme.income, bg: theme.primarySoft };
+      }
       return { label: 'Ready', color: theme.textSecondary, bg: theme.surfaceElevated };
   }
 }
@@ -71,24 +75,33 @@ export default function AccountManagementScreen() {
   const initials = getProfileInitials(
     authUser?.googleName || settings.profileName || authUser?.email,
   );
-  const statusMeta = getSyncStatusMeta(syncState.syncStatus, theme);
+  const statusMeta = getSyncStatusMeta(
+    syncState.syncStatus,
+    Boolean(syncState.lastSyncedAt),
+    theme,
+  );
 
   const lastSyncedLabel = syncState.lastSyncedAt
     ? `${formatDateForDisplay(syncState.lastSyncedAt.slice(0, 10), settings.dateFormat)} · ${syncState.lastSyncedAt.slice(11, 16)} UTC`
     : 'Not synced yet';
 
   const handleGoogleSignIn = async () => {
+    if (authBusy) return;
     setErrorMsg(null);
-    const result = await signInWithGoogle();
-    if (result.status === 'error') {
-      setErrorMsg(result.message);
-      return;
-    }
-    if (result.status === 'success') {
-      const latest = useAppStore.getState();
-      if (!latest.accountSwitchConflict && !latest.settings.profileCompletedAt) {
-        router.push('/profile/complete');
+    try {
+      const result = await signInWithGoogle();
+      if (result.status === 'error') {
+        setErrorMsg(result.message);
+        return;
       }
+      if (result.status === 'success') {
+        const latest = useAppStore.getState();
+        if (!latest.accountSwitchConflict && !latest.settings.profileCompletedAt) {
+          router.push('/profile/complete');
+        }
+      }
+    } catch {
+      setErrorMsg('Unable to complete Google sign-in. Please try again.');
     }
   };
 
@@ -98,8 +111,8 @@ export default function AccountManagementScreen() {
     setSyncingManual(true);
     try {
       const res = await syncNow();
-      if (res.status === 'error' && res.message) {
-        setErrorMsg(res.message);
+      if (res.status === 'error' && res.error) {
+        setErrorMsg(res.error);
       }
     } finally {
       setSyncingManual(false);
@@ -207,7 +220,7 @@ export default function AccountManagementScreen() {
               <View style={styles.flex1}>
                 <AppButton
                   label="Sync Now"
-                  icon={<Ionicons name="sync-outline" size={16} color="#FFFFFF" />}
+                  icon={<Ionicons name="sync-outline" size={16} color={theme.primaryText} />}
                   onPress={() => void handleSyncNow()}
                   loading={syncingManual || syncState.syncStatus === 'syncing'}
                   disabled={authBusy}

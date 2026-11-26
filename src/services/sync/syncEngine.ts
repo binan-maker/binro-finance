@@ -6,7 +6,6 @@ import { clearAllStoredImages } from '@/services/images/localImageStorage';
 import { getSupabaseClient } from '@/services/supabase/client';
 import type { SyncOutboxRow } from '@/types/database';
 import type {
-  AppSettings,
   BudgetPeriod,
   CategoryType,
   DateFormatPreference,
@@ -758,7 +757,14 @@ async function pullRemoteForUser(
       .limit(KEYSET_PAGE_SIZE);
 
     if (ttCursor) {
-      ttQuery = ttQuery.gte('server_updated_at', ttCursor.serverUpdatedAt);
+      const [cursorTxId = '', cursorTagId = ''] = ttCursor.id.split(':');
+      if (cursorTxId && cursorTagId) {
+        ttQuery = ttQuery.or(
+          `server_updated_at.gt.${ttCursor.serverUpdatedAt},and(server_updated_at.eq.${ttCursor.serverUpdatedAt},transaction_id.gt.${cursorTxId}),and(server_updated_at.eq.${ttCursor.serverUpdatedAt},transaction_id.eq.${cursorTxId},tag_id.gt.${cursorTagId})`,
+        );
+      } else {
+        ttQuery = ttQuery.gt('server_updated_at', ttCursor.serverUpdatedAt);
+      }
     }
 
     const { data, error } = await ttQuery;
@@ -841,9 +847,11 @@ export async function runSyncCycle(userId: string): Promise<SyncRunResult> {
         refreshedState,
       );
 
+      const nowIso = new Date().toISOString();
       await repositories.sync.updateSyncState({
         cursors: nextCursors,
-        lastSyncedAt: new Date().toISOString(),
+        lastSyncedAt: nowIso,
+        migrationCompletedAt: syncState.migrationCompletedAt ?? nowIso,
         lastError: null,
         syncStatus: 'idle',
       });

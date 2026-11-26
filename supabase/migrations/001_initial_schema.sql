@@ -309,7 +309,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_user_unique_scope
     period,
     year,
     month,
-    COALESCE(start_date::text, ''),
+    COALESCE(start_date, DATE '1900-01-01'),
     currency_code,
     COALESCE(category_id, '')
   )

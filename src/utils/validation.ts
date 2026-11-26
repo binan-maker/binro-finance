@@ -1,4 +1,8 @@
 import { isValidIsoCurrencyCode, type CurrencyConfig } from '@/constants/currencies';
+import {
+  ALLOWED_MIME_TYPES,
+  isLocalRelativeImagePath,
+} from '@/services/images/mediaPathUtils';
 import type { BackupPayload } from '@/types/database';
 import type { GenderOption, TransactionType } from '@/types/models';
 
@@ -141,6 +145,24 @@ const VALID_GENDERS: readonly GenderOption[] = [
 
 function isNonEmptyString(val: unknown): val is string {
   return typeof val === 'string' && val.trim().length > 0;
+}
+
+function isValidBackupMediaAssetKey(assetKey: string, schemaVersion: number): boolean {
+  if (!assetKey || assetKey.includes('..') || assetKey.includes('\\')) {
+    return false;
+  }
+  const normalized: string = assetKey;
+  if (isLocalRelativeImagePath(normalized)) {
+    return true;
+  }
+  if (schemaVersion <= 4) {
+    const marker = '/binro_images/';
+    const idx = assetKey.indexOf(marker);
+    if (assetKey.startsWith('file://') && idx !== -1) {
+      return isLocalRelativeImagePath(assetKey.slice(idx + 1));
+    }
+  }
+  return false;
 }
 
 export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayload> {
@@ -358,14 +380,16 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
     if (!candidate.mediaAssets || typeof candidate.mediaAssets !== 'object' || Array.isArray(candidate.mediaAssets)) {
       return { valid: false, error: 'Backup mediaAssets must be an object map.' };
     }
+    const schemaVer = Number(candidate.schemaVersion);
     for (const [assetKey, assetVal] of Object.entries(candidate.mediaAssets as Record<string, unknown>)) {
       const assetRec = assetVal as Record<string, unknown>;
       if (
-        !isNonEmptyString(assetKey) ||
+        !isValidBackupMediaAssetKey(assetKey, schemaVer) ||
         !assetVal ||
         typeof assetVal !== 'object' ||
         typeof assetRec.mimeType !== 'string' ||
-        typeof assetRec.base64 !== 'string'
+        !ALLOWED_MIME_TYPES.has(assetRec.mimeType.trim().toLowerCase()) ||
+        !isNonEmptyString(assetRec.base64)
       ) {
         return { valid: false, error: 'Backup contains an invalid media asset.' };
       }

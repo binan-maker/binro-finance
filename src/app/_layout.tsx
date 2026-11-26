@@ -82,28 +82,34 @@ export default function RootLayout() {
 
     let cancelled = false;
 
-    void supabase.auth.getSession().then(({ data }) => {
-      if (cancelled || !data.session?.user) return;
-      const store = useAppStore.getState();
-      const profile = extractAuthProfileFromSessionUser(data.session.user);
-      if (store.authUser?.userId !== profile.userId && !store.authBusy) {
-        void store.applySignedInSession(profile);
-      }
-    });
+    void supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        if (cancelled || !data.session?.user) return;
+        const store = useAppStore.getState();
+        const profile = extractAuthProfileFromSessionUser(data.session.user);
+        if (store.authUser?.userId !== profile.userId && !store.authBusy) {
+          void store.applySignedInSession(profile).catch(() => {});
+        }
+      })
+      .catch(() => {});
 
     const { data: subscription } = supabase.auth.onAuthStateChange((event, session) => {
       if (cancelled) return;
       const store = useAppStore.getState();
       if (
-        (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') &&
+        (event === 'INITIAL_SESSION' ||
+          event === 'SIGNED_IN' ||
+          event === 'TOKEN_REFRESHED' ||
+          event === 'USER_UPDATED') &&
         session?.user
       ) {
         const profile = extractAuthProfileFromSessionUser(session.user);
         if (store.authUser?.userId !== profile.userId && !store.authBusy) {
-          void store.applySignedInSession(profile);
+          void store.applySignedInSession(profile).catch(() => {});
         }
       } else if (event === 'SIGNED_OUT' && store.authUser && !store.authBusy) {
-        void store.signOutCloud();
+        void store.signOutCloud().catch(() => {});
       }
     });
 
@@ -114,10 +120,12 @@ export default function RootLayout() {
   }, [isInitialized]);
 
   useEffect(() => {
-    if (!isInitialized || accountSwitchConflict) return;
+    if (!isInitialized || accountSwitchConflict || authBusy) return;
 
-    const inOnboarding = segments[0] === 'onboarding';
-    if (!onboardingCompleted && !inOnboarding) {
+    const rootSegment = segments[0];
+    const inOnboarding = rootSegment === 'onboarding';
+    const allowedBeforeOnboarding = inOnboarding || rootSegment === 'currency';
+    if (!onboardingCompleted && !allowedBeforeOnboarding) {
       router.replace('/onboarding');
     } else if (onboardingCompleted && inOnboarding) {
       if (authUser && !profileCompletedAt) {
@@ -131,6 +139,7 @@ export default function RootLayout() {
     onboardingCompleted,
     profileCompletedAt,
     authUser,
+    authBusy,
     accountSwitchConflict,
     segments,
     router,

@@ -580,8 +580,8 @@ export function TransactionForm({
                         style={[
                           styles.inlineTagPill,
                           {
-                            backgroundColor: `${tag.color}20`,
-                            borderColor: tag.color,
+                            backgroundColor: theme.backgroundSelected,
+                            borderColor: theme.border,
                           },
                         ]}>
                         <View

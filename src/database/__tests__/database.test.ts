@@ -503,6 +503,13 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
         profileAvatar: null,
         currencyInitialized: false,
         showHomeBudgetShortcut: false,
+        gender: null,
+        dateOfBirth: null,
+        googleName: null,
+        googleEmail: null,
+        googleAvatarUrl: null,
+        profileCompletedAt: null,
+        updatedAt: '2026-11-25T00:00:00.000Z',
       },
       categories: [],
       tags: [],
@@ -814,7 +821,7 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     const exported = await v5Repos.backup.exportAll('5.0.0');
     expect(exported.schemaVersion).toBe(5);
     expect(
-      exported.paymentMethods.find((item) => item.id === pm.id)?.imageUri,
+      exported.paymentMethods?.find((item) => item.id === pm.id)?.imageUri,
     ).toBe('binro_images/payment_methods/family.jpg');
     expect(exported.settings.gender).toBe('non_binary');
     expect(exported.settings.dateOfBirth).toBe('1997-04-12');

@@ -409,10 +409,16 @@ export const useAppStore = create<AppStoreState>((set, get) => {
     completeOnboarding: async ({ currencyCode, openingBalanceMinor }) => {
       set({ isLoading: true, error: null });
       try {
+        const currentSettings = get().settings;
+        const preserveExistingBalance = currentSettings.openingBalanceMinor > 0;
         const updated = await repositories.settings.update({
           currencyCode,
-          openingBalanceMinor,
-          openingBalanceCurrencyCode: currencyCode,
+          openingBalanceMinor: preserveExistingBalance
+            ? currentSettings.openingBalanceMinor
+            : openingBalanceMinor,
+          openingBalanceCurrencyCode: preserveExistingBalance
+            ? currentSettings.openingBalanceCurrencyCode
+            : currencyCode,
           onboardingCompleted: true,
           currencyInitialized: true,
         });
@@ -745,13 +751,20 @@ export const useAppStore = create<AppStoreState>((set, get) => {
 
       set({ authUser: profile, accountSwitchConflict: null });
 
-      if (linkCheck.status === 'needs_link') {
-        await linkLocalWorkspaceToUser({
-          userId: profile.userId,
-          email: profile.email,
-        });
-      } else {
-        await runSyncCycle(profile.userId);
+      try {
+        if (linkCheck.status === 'needs_link') {
+          await linkLocalWorkspaceToUser({
+            userId: profile.userId,
+            email: profile.email,
+          });
+        } else {
+          await runSyncCycle(profile.userId);
+        }
+      } catch (syncError) {
+        if (typeof __DEV__ !== 'undefined' && __DEV__) {
+          const msg = syncError instanceof Error ? syncError.message : 'sync_error';
+          console.warn(`[GoogleAuth] Post-sign-in sync skipped: ${msg}`);
+        }
       }
 
       const [snapshot, entitlement] = await Promise.all([
@@ -774,6 +787,15 @@ export const useAppStore = create<AppStoreState>((set, get) => {
           void trackAnalyticsEvent('google_sign_in_completed');
         }
         return result;
+      } catch (err) {
+        const message =
+          err instanceof Error && err.message.trim()
+            ? err.message
+            : 'Unable to complete Google sign-in. Please try again.';
+        if (typeof __DEV__ !== 'undefined' && __DEV__) {
+          console.warn(`[GoogleAuth] signInWithGoogle store error: ${message}`);
+        }
+        return { status: 'error', message };
       } finally {
         set({ authBusy: false });
       }

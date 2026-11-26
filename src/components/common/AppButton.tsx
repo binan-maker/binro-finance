@@ -21,6 +21,7 @@ interface AppButtonProps {
   size?: ButtonSize;
   disabled?: boolean;
   loading?: boolean;
+  preserveAppearanceWhenDisabled?: boolean;
   icon?: ReactNode;
   style?: StyleProp<ViewStyle>;
   fullWidth?: boolean;
@@ -33,12 +34,14 @@ export function AppButton({
   size = 'md',
   disabled = false,
   loading = false,
+  preserveAppearanceWhenDisabled = false,
   icon,
   style,
   fullWidth = false,
 }: AppButtonProps) {
   const theme = useTheme();
   const isDisabled = disabled || loading;
+  const shouldDimForDisabled = disabled && !loading && !preserveAppearanceWhenDisabled;
 
   const variantColors: Record<
     ButtonVariant,
@@ -88,25 +91,19 @@ export function AppButton({
           borderColor: palette.border,
         },
         pressed && !isDisabled && styles.pressed,
-        isDisabled && styles.disabled,
+        shouldDimForDisabled && styles.disabled,
         style,
       ]}>
-      {loading ? (
-        <ActivityIndicator size="small" color={palette.text} />
-      ) : (
-        <>
-          {icon}
-          <Text
-            style={[
-              styles.label,
-              size === 'sm' ? styles.labelSm : styles.labelMd,
-              { color: palette.text },
-            ]}
-            numberOfLines={1}>
-            {label}
-          </Text>
-        </>
-      )}
+      {loading ? <ActivityIndicator size="small" color={palette.text} /> : icon}
+      <Text
+        style={[
+          styles.label,
+          size === 'sm' ? styles.labelSm : styles.labelMd,
+          { color: palette.text },
+        ]}
+        numberOfLines={1}>
+        {label}
+      </Text>
     </Pressable>
   );
 }

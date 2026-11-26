@@ -187,10 +187,8 @@ export async function computeLocalFileSha256(
   const loaded = await readLocalImageBytes(storedValue);
   if (!loaded) return null;
   try {
-    const buffer = loaded.bytes.buffer.slice(
-      loaded.bytes.byteOffset,
-      loaded.bytes.byteOffset + loaded.bytes.byteLength,
-    );
+    const buffer = new ArrayBuffer(loaded.bytes.byteLength);
+    new Uint8Array(buffer).set(loaded.bytes);
     const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, buffer);
     const view = new Uint8Array(digest);
     return Array.from(view)

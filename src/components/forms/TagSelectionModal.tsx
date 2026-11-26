@@ -146,9 +146,9 @@ export function TagSelectionModal({
                   styles.tagPill,
                   {
                     backgroundColor: selected
-                      ? `${tag.color}20`
-                      : theme.surfaceElevated,
-                    borderColor: selected ? tag.color : theme.border,
+                      ? theme.backgroundSelected
+                      : theme.surface,
+                    borderColor: selected ? theme.textMuted : theme.border,
                   },
                   pressed && styles.pressed,
                 ]}>
@@ -167,6 +167,9 @@ export function TagSelectionModal({
                   ]}>
                   {tag.name}
                 </Text>
+                {selected ? (
+                  <Ionicons name="checkmark" size={13} color={theme.textSecondary} />
+                ) : null}
               </Pressable>
             );
           })}

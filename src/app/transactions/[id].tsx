@@ -286,8 +286,8 @@ export default function TransactionDetailsScreen() {
                     style={[
                       styles.tagChip,
                       {
-                        backgroundColor: `${tag.color}20`,
-                        borderColor: tag.color,
+                        backgroundColor: theme.backgroundSelected,
+                        borderColor: theme.border,
                       },
                     ]}>
                     <View style={[styles.tagDot, { backgroundColor: tag.color }]} />

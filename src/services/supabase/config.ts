@@ -23,7 +23,8 @@ export function getPublicEnvConfig(): PublicSupabaseConfig {
   return {
     supabaseUrl: cleanEnvValue(process.env.EXPO_PUBLIC_SUPABASE_URL),
     supabasePublishableKey: cleanEnvValue(
-      process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+      process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+        process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
     ),
     googleWebClientId: cleanEnvValue(process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID),
   };
