@@ -21,6 +21,8 @@ export interface GoogleAuthUserProfile {
   email: string | null;
   googleName: string | null;
   googleAvatarUrl: string | null;
+  createdAt?: string | null;
+  lastSignInAt?: string | null;
 }
 
 export type GoogleSignInFlowResult =
@@ -222,6 +224,9 @@ export async function signInWithGoogleAccount(): Promise<GoogleSignInFlowResult>
           (typeof data.user.user_metadata?.avatar_url === 'string'
             ? data.user.user_metadata.avatar_url
             : null),
+        createdAt: typeof data.user.created_at === 'string' ? data.user.created_at : null,
+        lastSignInAt:
+          typeof data.user.last_sign_in_at === 'string' ? data.user.last_sign_in_at : null,
       },
     };
   } catch (err) {
@@ -330,11 +335,17 @@ export function buildGoogleFallbackProfilePatch(
   currentSettings: AppSettings,
   profile: GoogleAuthUserProfile,
 ): UpdateSettingsInput {
-  const patch: UpdateSettingsInput = {
-    googleName: profile.googleName,
-    googleEmail: profile.email,
-    googleAvatarUrl: profile.googleAvatarUrl,
-  };
+  const patch: UpdateSettingsInput = {};
+
+  if (profile.googleName?.trim()) {
+    patch.googleName = profile.googleName.trim();
+  }
+  if (profile.email?.trim()) {
+    patch.googleEmail = profile.email.trim();
+  }
+  if (profile.googleAvatarUrl?.trim()) {
+    patch.googleAvatarUrl = profile.googleAvatarUrl.trim();
+  }
 
   if (!currentSettings.profileName?.trim() && profile.googleName?.trim()) {
     patch.profileName = profile.googleName.trim();
@@ -346,6 +357,8 @@ export function buildGoogleFallbackProfilePatch(
 export function extractAuthProfileFromSessionUser(user: {
   id: string;
   email?: string | null;
+  created_at?: string | null;
+  last_sign_in_at?: string | null;
   user_metadata?: Record<string, unknown>;
 }): GoogleAuthUserProfile {
   const meta = user.user_metadata ?? {};
@@ -367,5 +380,7 @@ export function extractAuthProfileFromSessionUser(user: {
     email: user.email ?? null,
     googleName: fullName,
     googleAvatarUrl: avatarUrl,
+    createdAt: typeof user.created_at === 'string' ? user.created_at : null,
+    lastSignInAt: typeof user.last_sign_in_at === 'string' ? user.last_sign_in_at : null,
   };
 }

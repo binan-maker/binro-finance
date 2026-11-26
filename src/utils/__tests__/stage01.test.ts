@@ -2,15 +2,30 @@ import { describe, expect, test } from 'bun:test';
 
 import type { CurrencyConfig } from '@/constants/currencies';
 import {
+  decideAccountSignInNotification,
+  SIGNIN_NOTIFICATION_BODY,
+  SIGNIN_NOTIFICATION_TITLE,
+  WELCOME_NOTIFICATION_BODY,
+  WELCOME_NOTIFICATION_TITLE,
+} from '@/services/auth/accountNotificationPolicy';
+import {
+  clampCalendarMonthToMaxDate,
   getBiweeklyPeriodForDate,
   getBiweeklyPeriodRange,
+  getDobYearOptions,
   getMonthRange,
   getWeekRange,
   getYearRange,
   isValidISODate,
+  validateDateOfBirth,
 } from '@/utils/date';
 import { formatMinorToMajorInput, formatMoney, parseMajorToMinor } from '@/utils/money';
-import { getProfileInitials } from '@/utils/profile';
+import {
+  getBioPreview,
+  getProfileInitials,
+  sanitizeSelectableGender,
+  SELECTABLE_GENDER_OPTIONS,
+} from '@/utils/profile';
 import { generateUUID, isValidUUID } from '@/utils/uuid';
 import {
   validateBackupPayload,
@@ -404,3 +419,143 @@ describe('uuid & validation', () => {
     ).toBe(false);
   });
 });
+
+describe('profile gender, bio preview, and DOB calendar validation', () => {
+  test('exposes exactly 3 gender options and safely maps obsolete saved values to null', () => {
+    expect(SELECTABLE_GENDER_OPTIONS.map((o) => o.label)).toEqual([
+      'Male',
+      'Female',
+      'Prefer not to say',
+    ]);
+    expect(SELECTABLE_GENDER_OPTIONS.map((o) => o.value)).toEqual([
+      'male',
+      'female',
+      'prefer_not_to_say',
+    ]);
+
+    expect(sanitizeSelectableGender('male')).toBe('male');
+    expect(sanitizeSelectableGender('female')).toBe('female');
+    expect(sanitizeSelectableGender('prefer_not_to_say')).toBe('prefer_not_to_say');
+    expect(sanitizeSelectableGender('non_binary')).toBeNull();
+    expect(sanitizeSelectableGender('other')).toBeNull();
+    expect(sanitizeSelectableGender(null)).toBeNull();
+    expect(sanitizeSelectableGender(undefined)).toBeNull();
+  });
+
+  test('collapses bio preview cleanly for empty and multi-line inputs', () => {
+    expect(getBioPreview(null)).toBeNull();
+    expect(getBioPreview('   \n  ')).toBeNull();
+    expect(getBioPreview('  Save 20%\n  monthly  ')).toBe('Save 20% monthly');
+  });
+
+  test('validates Date of Birth with leap years, future blocking, and empty optional state', () => {
+    const today = '2026-11-26';
+    expect(validateDateOfBirth('', today)).toEqual({ valid: true, value: null });
+    expect(validateDateOfBirth(null, today)).toEqual({ valid: true, value: null });
+
+    expect(validateDateOfBirth('2000-02-29', today)).toEqual({
+      valid: true,
+      value: '2000-02-29',
+    });
+    expect(validateDateOfBirth('2024-02-29', today)).toEqual({
+      valid: true,
+      value: '2024-02-29',
+    });
+    expect(validateDateOfBirth('2025-02-29', today).valid).toBe(false);
+    expect(validateDateOfBirth('1900-02-29', today).valid).toBe(false);
+    expect(validateDateOfBirth('1899-12-31', today).valid).toBe(false);
+    expect(validateDateOfBirth('2026-11-27', today).valid).toBe(false);
+    expect(validateDateOfBirth('2026-11-26', today)).toEqual({
+      valid: true,
+      value: '2026-11-26',
+    });
+
+    const years = getDobYearOptions(today);
+    expect(years[0]).toBe(2026);
+    expect(years[years.length - 1]).toBe(1900);
+    expect(years.length).toBe(127);
+
+    expect(clampCalendarMonthToMaxDate(2026, 12, today)).toEqual({ year: 2026, month: 11 });
+    expect(clampCalendarMonthToMaxDate(2030, 5, today)).toEqual({ year: 2026, month: 5 });
+  });
+});
+
+describe('account sign-in notification policy', () => {
+  test('never emits on session_restore and distinguishes new vs returning explicit sign-in', () => {
+    expect(
+      decideAccountSignInNotification({
+        source: 'session_restore',
+        userId: 'u-1',
+        previousLinkedUserId: null,
+        alreadyWelcomedLocally: false,
+        remoteAccountExisted: false,
+      }),
+    ).toBeNull();
+
+    // First-ever explicit sign-in for new account
+    expect(
+      decideAccountSignInNotification({
+        source: 'explicit_sign_in',
+        userId: 'u-1',
+        previousLinkedUserId: null,
+        alreadyWelcomedLocally: false,
+        remoteAccountExisted: false,
+        createdAt: '2026-11-26T10:00:00.000Z',
+        lastSignInAt: '2026-11-26T10:00:02.000Z',
+      }),
+    ).toEqual({
+      type: 'system',
+      title: WELCOME_NOTIFICATION_TITLE,
+      body: WELCOME_NOTIFICATION_BODY,
+      metadataJson: 'account_welcome:u-1',
+    });
+
+    // Returning via local dedupe key
+    expect(
+      decideAccountSignInNotification({
+        source: 'explicit_sign_in',
+        userId: 'u-1',
+        previousLinkedUserId: 'u-1',
+        alreadyWelcomedLocally: true,
+        remoteAccountExisted: false,
+      }),
+    ).toEqual({
+      type: 'system',
+      title: SIGNIN_NOTIFICATION_TITLE,
+      body: SIGNIN_NOTIFICATION_BODY,
+    });
+
+    // Returning user on a new device (remote account already exists)
+    expect(
+      decideAccountSignInNotification({
+        source: 'explicit_sign_in',
+        userId: 'u-2',
+        previousLinkedUserId: null,
+        alreadyWelcomedLocally: false,
+        remoteAccountExisted: true,
+      }),
+    ).toEqual({
+      type: 'system',
+      title: SIGNIN_NOTIFICATION_TITLE,
+      body: SIGNIN_NOTIFICATION_BODY,
+    });
+
+    // Returning user inferred from Supabase createdAt vs lastSignInAt gap
+    expect(
+      decideAccountSignInNotification({
+        source: 'explicit_sign_in',
+        userId: 'u-3',
+        previousLinkedUserId: null,
+        alreadyWelcomedLocally: false,
+        remoteAccountExisted: false,
+        createdAt: '2026-10-01T10:00:00.000Z',
+        lastSignInAt: '2026-11-26T10:00:00.000Z',
+      }),
+    ).toEqual({
+      type: 'system',
+      title: SIGNIN_NOTIFICATION_TITLE,
+      body: SIGNIN_NOTIFICATION_BODY,
+    });
+  });
+});
+

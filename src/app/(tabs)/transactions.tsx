@@ -19,6 +19,7 @@ import {
   AppScreen,
   EmptyState,
   SegmentedControl,
+  SignInReminderCard,
   type SegmentOption,
 } from '@/components/common';
 import { TransactionRowItem } from '@/components/transactions/TransactionRowItem';
@@ -29,20 +30,16 @@ import { useAppStore } from '@/store/app-store';
 import type { Transaction, TransactionType } from '@/types/models';
 import { formatRelativeDateLabel, getTodayISODate } from '@/utils/date';
 import { formatMoney } from '@/utils/money';
+import { shouldPromptProfileCompletion } from '@/utils/profile';
+import {
+  injectTransactionsSignInReminder,
+  type TransactionsDailyNet,
+  type TransactionsListItem,
+  type TransactionsSectionSource,
+  type TransactionsSectionWithReminder,
+} from '@/utils/transactionReminder';
 
 type TypeFilter = 'all' | TransactionType;
-
-interface CurrencyDailyNet {
-  currencyCode: string;
-  netMinor: number;
-}
-
-interface TransactionSection {
-  title: string;
-  date: string;
-  dailyNets: CurrencyDailyNet[];
-  data: Transaction[];
-}
 
 export default function TransactionsScreen() {
   const theme = useTheme();
@@ -56,12 +53,22 @@ export default function TransactionsScreen() {
   const transactions = useAppStore((s) => s.transactions);
   const transactionFilters = useAppStore((s) => s.transactionFilters);
   const resetTransactionFilters = useAppStore((s) => s.resetTransactionFilters);
+  const authUser = useAppStore((s) => s.authUser);
+  const authBusy = useAppStore((s) => s.authBusy);
+  const signInWithGoogle = useAppStore((s) => s.signInWithGoogle);
+  const transactionsSignInReminderDismissed = useAppStore(
+    (s) => s.transactionsSignInReminderDismissed,
+  );
+  const dismissTransactionsSignInReminder = useAppStore(
+    (s) => s.dismissTransactionsSignInReminder,
+  );
 
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [scrolledDown, setScrolledDown] = useState(false);
+  const [reminderError, setReminderError] = useState<string | null>(null);
 
   const lastScrollY = useRef(0);
   const [ctaAnim] = useState(() => new Animated.Value(1));
@@ -160,7 +167,7 @@ export default function TransactionsScreen() {
     ],
   );
 
-  const sections = useMemo<TransactionSection[]>(() => {
+  const sections = useMemo<TransactionsSectionSource[]>(() => {
     const todayISO = getTodayISODate();
     const groups = new Map<string, Transaction[]>();
     for (const tx of filteredTransactions) {
@@ -179,7 +186,7 @@ export default function TransactionsScreen() {
         );
       }
 
-      const dailyNets: CurrencyDailyNet[] = Array.from(netByCurrency.entries()).map(
+      const dailyNets: TransactionsDailyNet[] = Array.from(netByCurrency.entries()).map(
         ([currencyCode, netMinor]) => ({ currencyCode, netMinor }),
       );
 
@@ -191,6 +198,38 @@ export default function TransactionsScreen() {
       };
     });
   }, [filteredTransactions, settings.dateFormat]);
+
+  const sectionsWithReminder = useMemo(
+    () =>
+      injectTransactionsSignInReminder(
+        sections,
+        !authUser && !transactionsSignInReminderDismissed,
+      ),
+    [sections, authUser, transactionsSignInReminderDismissed],
+  );
+
+  const handleInlineGoogleSignIn = async () => {
+    if (authBusy) return;
+    setReminderError(null);
+    try {
+      const result = await signInWithGoogle();
+      if (result.status === 'error') {
+        setReminderError(result.message);
+        return;
+      }
+      if (result.status === 'success') {
+        const latest = useAppStore.getState();
+        if (
+          !latest.accountSwitchConflict &&
+          shouldPromptProfileCompletion(latest.settings)
+        ) {
+          router.push('/profile/complete');
+        }
+      }
+    } catch {
+      setReminderError('Unable to complete Google sign-in. Please try again.');
+    }
+  };
 
   const handleResetAll = () => {
     setTypeFilter('all');
@@ -295,7 +334,7 @@ export default function TransactionsScreen() {
         </View>
 
         <View style={styles.listArea}>
-          {sections.length === 0 ? (
+          {sectionsWithReminder.length === 0 ? (
             <View style={styles.emptyWrap}>
               {transactions.length === 0 ? (
                 <EmptyState
@@ -314,8 +353,8 @@ export default function TransactionsScreen() {
               )}
             </View>
           ) : (
-            <SectionList
-              sections={sections}
+            <SectionList<TransactionsListItem, TransactionsSectionWithReminder>
+              sections={sectionsWithReminder}
               keyExtractor={(item) => item.id}
               stickySectionHeadersEnabled={false}
               showsVerticalScrollIndicator={false}
@@ -345,14 +384,30 @@ export default function TransactionsScreen() {
                   </View>
                 </View>
               )}
-              renderItem={({ item }) => (
-                <TransactionRowItem
-                  transaction={item}
-                  category={item.categoryId ? categoryMap.get(item.categoryId) : undefined}
-                  catalog={currencies}
-                  onPress={() => router.push(`/transactions/${item.id}`)}
-                />
-              )}
+              renderItem={({ item }) => {
+                if (item.kind === 'signin_reminder') {
+                  return (
+                    <SignInReminderCard
+                      loading={authBusy}
+                      errorMessage={reminderError}
+                      onSignInPress={() => void handleInlineGoogleSignIn()}
+                      onDismiss={() => {
+                        setReminderError(null);
+                        void dismissTransactionsSignInReminder();
+                      }}
+                    />
+                  );
+                }
+                const tx = item.transaction;
+                return (
+                  <TransactionRowItem
+                    transaction={tx}
+                    category={tx.categoryId ? categoryMap.get(tx.categoryId) : undefined}
+                    catalog={currencies}
+                    onPress={() => router.push(`/transactions/${tx.id}`)}
+                  />
+                );
+              }}
             />
           )}
         </View>

@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 
 import {
@@ -8,6 +9,12 @@ import {
 import { initializeDatabase } from '@/database';
 import { repositories } from '@/database/repositories';
 import { trackAnalyticsEvent } from '@/services/analytics/analyticsService';
+import { deleteRemoteUserAccount } from '@/services/auth/accountDeletionService';
+import {
+  type AuthSessionSource,
+  buildWelcomeDedupeKey,
+  decideAccountSignInNotification,
+} from '@/services/auth/accountNotificationPolicy';
 import {
   buildGoogleFallbackProfilePatch,
   type GoogleAuthUserProfile,
@@ -29,11 +36,14 @@ import {
 } from '@/services/entitlements/entitlementService';
 import { clearAllStoredImages } from '@/services/images/localImageStorage';
 import {
+  checkRemoteAccountExists,
+  fetchRemoteProfileRow,
   inspectAccountLinkState,
   linkLocalWorkspaceToUser,
   runSyncCycle,
   type SyncRunResult,
   switchWorkspaceAccountAndSync,
+  waitForInFlightSync,
 } from '@/services/sync/syncEngine';
 import type {
   BackupPayload,
@@ -65,6 +75,11 @@ import type {
 import type { TransactionFilterState } from '@/types/reports';
 import { addDaysToISODate, getTodayISODate, parseISODateParts } from '@/utils/date';
 import { formatMoney } from '@/utils/money';
+import { reconcileLocalAndRemoteProfile } from '@/utils/profile';
+
+const HOME_SIGNIN_REMINDER_DISMISSED_KEY = 'binro_home_signin_reminder_dismissed';
+const TRANSACTIONS_SIGNIN_REMINDER_DISMISSED_KEY =
+  'binro_transactions_signin_reminder_dismissed';
 
 export interface TransactionDraft {
   mode: 'create' | 'edit';
@@ -94,6 +109,8 @@ export interface AccountSwitchConflict {
   previousUserEmail: string | null;
   hasLocalData: boolean;
   pendingOutboxCount: number;
+  source?: AuthSessionSource;
+  remoteAccountExisted?: boolean | null;
 }
 
 export function createDefaultTransactionFilters(): TransactionFilterState {
@@ -167,11 +184,15 @@ interface AppStoreState {
   pendingOutboxCount: number;
   entitlement: UserEntitlement;
   accountSwitchConflict: AccountSwitchConflict | null;
+  homeSignInReminderDismissed: boolean;
+  transactionsSignInReminderDismissed: boolean;
 
   initializeApp: () => Promise<void>;
   refreshData: () => Promise<void>;
   refreshCurrencyCatalog: () => Promise<void>;
   refreshSyncMetadata: () => Promise<void>;
+  dismissHomeSignInReminder: () => Promise<void>;
+  dismissTransactionsSignInReminder: () => Promise<void>;
   setTransactionFilters: (next: TransactionFilterState) => void;
   resetTransactionFilters: () => void;
   setTransactionDraft: (draft: TransactionDraft | null) => void;
@@ -181,7 +202,7 @@ interface AppStoreState {
   setOpeningBalanceDraft: (draft: OpeningBalanceDraft | null) => void;
   completeOnboarding: (params: {
     currencyCode: string;
-    openingBalanceMinor: number;
+    openingBalanceMinor?: number;
   }) => Promise<void>;
   updateSettings: (input: UpdateSettingsInput) => Promise<void>;
 
@@ -218,12 +239,16 @@ interface AppStoreState {
   ) => Promise<RestoreResult>;
   clearAllLocalData: () => Promise<void>;
 
-  applySignedInSession: (profile: GoogleAuthUserProfile) => Promise<void>;
+  applySignedInSession: (
+    profile: GoogleAuthUserProfile,
+    options?: { source?: AuthSessionSource },
+  ) => Promise<void>;
   signInWithGoogle: () => Promise<GoogleSignInFlowResult>;
   confirmAccountSwitchReplace: () => Promise<void>;
   cancelAccountSwitch: () => Promise<void>;
   syncNow: () => Promise<SyncRunResult>;
   signOutCloud: () => Promise<void>;
+  deleteAccountAndData: () => Promise<void>;
 }
 
 async function loadSnapshot() {
@@ -274,8 +299,8 @@ async function loadSnapshot() {
 
 export const useAppStore = create<AppStoreState>((set, get) => {
   const scheduleBackgroundSync = () => {
-    const { authUser, syncState, accountSwitchConflict, isInitialized } = get();
-    if (!isInitialized || !authUser || accountSwitchConflict) return;
+    const { authUser, authBusy, syncState, accountSwitchConflict, isInitialized } = get();
+    if (!isInitialized || !authUser || authBusy || accountSwitchConflict) return;
     if (syncState.linkedUserId && syncState.linkedUserId !== authUser.userId) return;
     void get().syncNow();
   };
@@ -303,6 +328,8 @@ export const useAppStore = create<AppStoreState>((set, get) => {
     pendingOutboxCount: 0,
     entitlement: DEFAULT_FREE_ENTITLEMENT,
     accountSwitchConflict: null,
+    homeSignInReminderDismissed: false,
+    transactionsSignInReminderDismissed: false,
 
     initializeApp: async () => {
       if (get().isLoading) return;
@@ -311,6 +338,19 @@ export const useAppStore = create<AppStoreState>((set, get) => {
       try {
         await initializeDatabase();
         let snapshot = await loadSnapshot();
+
+        let homeDismissed = false;
+        let txDismissed = false;
+        try {
+          const [rawHome, rawTx] = await Promise.all([
+            AsyncStorage.getItem(HOME_SIGNIN_REMINDER_DISMISSED_KEY),
+            AsyncStorage.getItem(TRANSACTIONS_SIGNIN_REMINDER_DISMISSED_KEY),
+          ]);
+          homeDismissed = rawHome === 'true';
+          txDismissed = rawTx === 'true';
+        } catch {
+          // Default to visible when local preference storage is unavailable
+        }
 
         // Only detect device currency on first launch when no saved preference exists
         if (!snapshot.settings.onboardingCompleted && !snapshot.settings.currencyInitialized) {
@@ -326,6 +366,8 @@ export const useAppStore = create<AppStoreState>((set, get) => {
         set({
           isInitialized: true,
           isLoading: false,
+          homeSignInReminderDismissed: homeDismissed,
+          transactionsSignInReminderDismissed: txDismissed,
           ...snapshot,
         });
 
@@ -370,6 +412,24 @@ export const useAppStore = create<AppStoreState>((set, get) => {
       }
     },
 
+    dismissHomeSignInReminder: async () => {
+      set({ homeSignInReminderDismissed: true });
+      try {
+        await AsyncStorage.setItem(HOME_SIGNIN_REMINDER_DISMISSED_KEY, 'true');
+      } catch {
+        // Non-fatal UI preference persistence failure
+      }
+    },
+
+    dismissTransactionsSignInReminder: async () => {
+      set({ transactionsSignInReminderDismissed: true });
+      try {
+        await AsyncStorage.setItem(TRANSACTIONS_SIGNIN_REMINDER_DISMISSED_KEY, 'true');
+      } catch {
+        // Non-fatal UI preference persistence failure
+      }
+    },
+
     setTransactionFilters: (next) => {
       set({ transactionFilters: next });
     },
@@ -410,15 +470,21 @@ export const useAppStore = create<AppStoreState>((set, get) => {
       set({ isLoading: true, error: null });
       try {
         const currentSettings = get().settings;
-        const preserveExistingBalance = currentSettings.openingBalanceMinor > 0;
+        const nextOpeningBalanceMinor =
+          openingBalanceMinor !== undefined
+            ? openingBalanceMinor
+            : currentSettings.openingBalanceMinor;
+        const nextOpeningBalanceCurrencyCode =
+          openingBalanceMinor !== undefined
+            ? currencyCode
+            : currentSettings.openingBalanceMinor > 0
+              ? currentSettings.openingBalanceCurrencyCode
+              : currencyCode;
+
         const updated = await repositories.settings.update({
           currencyCode,
-          openingBalanceMinor: preserveExistingBalance
-            ? currentSettings.openingBalanceMinor
-            : openingBalanceMinor,
-          openingBalanceCurrencyCode: preserveExistingBalance
-            ? currentSettings.openingBalanceCurrencyCode
-            : currencyCode,
+          openingBalanceMinor: nextOpeningBalanceMinor,
+          openingBalanceCurrencyCode: nextOpeningBalanceCurrencyCode,
           onboardingCompleted: true,
           currencyInitialized: true,
         });
@@ -696,6 +762,14 @@ export const useAppStore = create<AppStoreState>((set, get) => {
       try {
         await repositories.backup.clearAllData();
         clearAllStoredImages();
+        try {
+          await Promise.all([
+            AsyncStorage.removeItem(HOME_SIGNIN_REMINDER_DISMISSED_KEY),
+            AsyncStorage.removeItem(TRANSACTIONS_SIGNIN_REMINDER_DISMISSED_KEY),
+          ]);
+        } catch {
+          // Non-fatal
+        }
         let snapshot = await loadSnapshot();
         const detectedCurrency = detectDeviceCurrencyCode(snapshot.currencies);
         const updatedSettings = await repositories.settings.update({
@@ -711,6 +785,8 @@ export const useAppStore = create<AppStoreState>((set, get) => {
           onboardingCurrencyCode: null,
           openingBalanceDraft: null,
           transactionFilters: createDefaultTransactionFilters(),
+          homeSignInReminderDismissed: false,
+          transactionsSignInReminderDismissed: false,
           isLoading: false,
         });
       } catch {
@@ -722,11 +798,22 @@ export const useAppStore = create<AppStoreState>((set, get) => {
       }
     },
 
-    applySignedInSession: async (profile) => {
+    applySignedInSession: async (profile, options) => {
       if (!get().isInitialized) {
         await get().initializeApp();
       }
-      const linkCheck = await inspectAccountLinkState(profile.userId);
+      const source: AuthSessionSource = options?.source ?? 'session_restore';
+      const [syncStateBefore, notificationsBefore, linkCheck] = await Promise.all([
+        repositories.sync.getSyncState(),
+        repositories.notifications.getAll(),
+        inspectAccountLinkState(profile.userId),
+      ]);
+
+      const remoteAccountExisted =
+        source === 'explicit_sign_in'
+          ? await checkRemoteAccountExists(profile.userId)
+          : null;
+
       if (linkCheck.status === 'account_mismatch') {
         await repositories.sync.updateSyncState({
           syncStatus: 'needs_account_switch',
@@ -741,13 +828,24 @@ export const useAppStore = create<AppStoreState>((set, get) => {
             previousUserEmail: linkCheck.previousUserEmail,
             hasLocalData: linkCheck.hasLocalData,
             pendingOutboxCount: linkCheck.pendingOutboxCount,
+            source,
+            remoteAccountExisted,
           },
         });
         return;
       }
 
-      const fallbackPatch = buildGoogleFallbackProfilePatch(get().settings, profile);
-      await repositories.settings.update(fallbackPatch);
+      const remoteProfile = await fetchRemoteProfileRow(profile.userId);
+      const localSettings = await repositories.settings.get();
+      const reconciledPatch = reconcileLocalAndRemoteProfile({
+        localSettings,
+        remoteProfile,
+        authProfile: profile,
+      });
+      if (Object.keys(reconciledPatch).length > 0) {
+        const updatedSettings = await repositories.settings.update(reconciledPatch);
+        set({ settings: updatedSettings });
+      }
 
       set({ authUser: profile, accountSwitchConflict: null });
 
@@ -767,6 +865,21 @@ export const useAppStore = create<AppStoreState>((set, get) => {
         }
       }
 
+      const notifDecision = decideAccountSignInNotification({
+        source,
+        userId: profile.userId,
+        previousLinkedUserId: syncStateBefore.linkedUserId,
+        alreadyWelcomedLocally: notificationsBefore.some(
+          (n) => n.metadataJson === buildWelcomeDedupeKey(profile.userId),
+        ),
+        remoteAccountExisted,
+        createdAt: profile.createdAt,
+        lastSignInAt: profile.lastSignInAt,
+      });
+      if (notifDecision) {
+        await repositories.notifications.create(notifDecision);
+      }
+
       const [snapshot, entitlement] = await Promise.all([
         loadSnapshot(),
         refreshUserEntitlement(profile.userId),
@@ -783,7 +896,7 @@ export const useAppStore = create<AppStoreState>((set, get) => {
       try {
         const result = await signInWithGoogleAccount();
         if (result.status === 'success') {
-          await get().applySignedInSession(result.profile);
+          await get().applySignedInSession(result.profile, { source: 'explicit_sign_in' });
           void trackAnalyticsEvent('google_sign_in_completed');
         }
         return result;
@@ -820,6 +933,19 @@ export const useAppStore = create<AppStoreState>((set, get) => {
           ...fallbackPatch,
           onboardingCompleted: true,
         });
+
+        const notifDecision = decideAccountSignInNotification({
+          source: conflict.source ?? 'session_restore',
+          userId: conflict.newProfile.userId,
+          previousLinkedUserId: null,
+          alreadyWelcomedLocally: false,
+          remoteAccountExisted: conflict.remoteAccountExisted ?? null,
+          createdAt: conflict.newProfile.createdAt,
+          lastSignInAt: conflict.newProfile.lastSignInAt,
+        });
+        if (notifDecision) {
+          await repositories.notifications.create(notifDecision);
+        }
 
         const [snapshot, entitlement] = await Promise.all([
           loadSnapshot(),
@@ -902,6 +1028,65 @@ export const useAppStore = create<AppStoreState>((set, get) => {
           accountSwitchConflict: null,
           entitlement,
           syncState,
+        });
+      } finally {
+        set({ authBusy: false });
+      }
+    },
+
+    deleteAccountAndData: async () => {
+      if (get().authBusy) return;
+      set({ authBusy: true, error: null });
+      try {
+        await waitForInFlightSync();
+        const currentAuthUser = get().authUser;
+        if (currentAuthUser) {
+          await deleteRemoteUserAccount(currentAuthUser.userId);
+        }
+
+        await signOutGoogleAndSupabase();
+        await repositories.backup.clearAllData();
+        clearAllStoredImages();
+
+        await repositories.sync.updateSyncState({
+          linkedUserId: null,
+          linkedUserEmail: null,
+          migrationCompletedAt: null,
+          lastSyncedAt: null,
+          lastError: null,
+          syncStatus: 'idle',
+          cursors: {},
+        });
+        await repositories.sync.saveEntitlementCache(DEFAULT_FREE_ENTITLEMENT);
+        try {
+          await Promise.all([
+            AsyncStorage.removeItem(HOME_SIGNIN_REMINDER_DISMISSED_KEY),
+            AsyncStorage.removeItem(TRANSACTIONS_SIGNIN_REMINDER_DISMISSED_KEY),
+          ]);
+        } catch {
+          // Non-fatal
+        }
+
+        let snapshot = await loadSnapshot();
+        const detectedCurrency = detectDeviceCurrencyCode(snapshot.currencies);
+        const updatedSettings = await repositories.settings.update({
+          currencyCode: detectedCurrency,
+          openingBalanceCurrencyCode: detectedCurrency,
+          currencyInitialized: true,
+        });
+        snapshot = { ...snapshot, settings: updatedSettings };
+
+        set({
+          ...snapshot,
+          authUser: null,
+          accountSwitchConflict: null,
+          entitlement: DEFAULT_FREE_ENTITLEMENT,
+          transactionDraft: null,
+          onboardingCurrencyCode: null,
+          openingBalanceDraft: null,
+          transactionFilters: createDefaultTransactionFilters(),
+          homeSignInReminderDismissed: false,
+          transactionsSignInReminderDismissed: false,
         });
       } finally {
         set({ authBusy: false });

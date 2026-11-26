@@ -13,6 +13,12 @@ import { BottomSheetModal, CategoryIcon } from '@/components/common';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { Category, CategoryType } from '@/types/models';
+import {
+  buildCategoryPickerItems,
+  type DisplayCategoryItem,
+} from '@/utils/modalPickerLayout';
+
+export { buildCategoryPickerItems, type DisplayCategoryItem };
 
 interface CategoryPickerModalProps {
   visible: boolean;
@@ -21,12 +27,6 @@ interface CategoryPickerModalProps {
   selectedId: string | null;
   onSelect: (category: Category) => void;
   onClose: () => void;
-}
-
-interface DisplayCategoryItem {
-  category: Category;
-  parentName?: string;
-  isSubcategory: boolean;
 }
 
 export function CategoryPickerModal({
@@ -40,71 +40,30 @@ export function CategoryPickerModal({
   const theme = useTheme();
   const [search, setSearch] = useState('');
 
-  const items = useMemo<DisplayCategoryItem[]>(() => {
-    const activeForType = categories.filter(
-      (cat) => cat.type === type && (!cat.isArchived || cat.id === selectedId),
-    );
-    const parentMap = new Map(activeForType.map((c) => [c.id, c]));
-    const term = search.trim().toLowerCase();
+  const items = useMemo<DisplayCategoryItem[]>(
+    () =>
+      buildCategoryPickerItems({
+        categories,
+        type,
+        selectedId,
+        search,
+      }),
+    [categories, type, selectedId, search],
+  );
 
-    if (term.length > 0) {
-      return activeForType
-        .filter((cat) => {
-          const parentName = cat.parentId ? parentMap.get(cat.parentId)?.name ?? '' : '';
-          return (
-            cat.name.toLowerCase().includes(term) ||
-            parentName.toLowerCase().includes(term)
-          );
-        })
-        .map((cat) => ({
-          category: cat,
-          parentName: cat.parentId ? parentMap.get(cat.parentId)?.name : undefined,
-          isSubcategory: Boolean(cat.parentId),
-        }));
-    }
-
-    const roots = activeForType
-      .filter((c) => !c.parentId)
-      .sort((a, b) => a.name.localeCompare(b.name));
-    const ordered: DisplayCategoryItem[] = [];
-
-    for (const root of roots) {
-      ordered.push({ category: root, isSubcategory: false });
-      const children = activeForType
-        .filter((c) => c.parentId === root.id)
-        .sort((a, b) => a.name.localeCompare(b.name));
-      for (const child of children) {
-        ordered.push({
-          category: child,
-          parentName: root.name,
-          isSubcategory: true,
-        });
-      }
-    }
-
-    // Include orphan subcategories whose parent was archived
-    const includedIds = new Set(ordered.map((o) => o.category.id));
-    for (const cat of activeForType) {
-      if (!includedIds.has(cat.id)) {
-        ordered.push({
-          category: cat,
-          parentName: cat.parentId ? parentMap.get(cat.parentId)?.name : undefined,
-          isSubcategory: Boolean(cat.parentId),
-        });
-      }
-    }
-
-    return ordered;
-  }, [categories, type, selectedId, search]);
+  const handleClose = () => {
+    setSearch('');
+    onClose();
+  };
 
   return (
-    <BottomSheetModal visible={visible} onClose={onClose} keyboardAvoiding>
+    <BottomSheetModal visible={visible} onClose={handleClose} keyboardAvoiding>
       <View style={styles.sheetHeader}>
         <Text style={[styles.sheetTitle, { color: theme.text }]}>
           Select Category
         </Text>
         <Pressable
-          onPress={onClose}
+          onPress={handleClose}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="Close category selector">
@@ -112,77 +71,83 @@ export function CategoryPickerModal({
         </Pressable>
       </View>
 
-          <View
-            style={[
-              styles.searchBox,
-              { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
-            ]}>
-            <Ionicons name="search" size={18} color={theme.textMuted} />
-            <TextInput
-              value={search}
-              onChangeText={setSearch}
-              placeholder="Search categories or subcategories..."
-              placeholderTextColor={theme.textMuted}
-              style={[styles.searchInput, { color: theme.text }]}
-              autoCorrect={false}
-            />
-            {search.length > 0 ? (
-              <Pressable onPress={() => setSearch('')} hitSlop={6}>
-                <Ionicons name="close-circle" size={18} color={theme.textMuted} />
-              </Pressable>
-            ) : null}
-          </View>
+      <View
+        style={[
+          styles.searchBox,
+          { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
+        ]}>
+        <Ionicons name="search" size={18} color={theme.textMuted} />
+        <TextInput
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search categories or subcategories..."
+          placeholderTextColor={theme.textMuted}
+          style={[styles.searchInput, { color: theme.text }]}
+          autoCorrect={false}
+        />
+        {search.length > 0 ? (
+          <Pressable onPress={() => setSearch('')} hitSlop={6}>
+            <Ionicons name="close-circle" size={18} color={theme.textMuted} />
+          </Pressable>
+        ) : null}
+      </View>
 
-          <FlatList
-            data={items}
-            keyExtractor={(item) => item.category.id}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={styles.listContent}
-            ListEmptyComponent={
-              <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
-                No matching categories found.
-              </Text>
-            }
-            renderItem={({ item }) => {
-              const selected = item.category.id === selectedId;
-              return (
-                <Pressable
-                  onPress={() => {
-                    onSelect(item.category);
-                    setSearch('');
-                    onClose();
-                  }}
-                  style={[
-                    styles.row,
-                    item.isSubcategory && !search ? styles.subRow : null,
-                    {
-                      backgroundColor: selected ? theme.primarySoft : 'transparent',
-                      borderColor: selected ? theme.primary : theme.border,
-                    },
-                  ]}>
-                  <CategoryIcon
-                    icon={item.category.icon}
-                    color={item.category.color}
-                    imageUri={item.category.imageUri}
-                    size={36}
-                  />
-                  <View style={styles.rowText}>
-                    <Text style={[styles.rowName, { color: theme.text }]} numberOfLines={1}>
-                      {item.category.name}
-                    </Text>
-                    {item.parentName ? (
-                      <Text style={[styles.rowSub, { color: theme.textMuted }]}>
-                        {item.parentName}
-                      </Text>
-                    ) : null}
-                  </View>
-                  {selected ? (
-                    <Ionicons name="checkmark-circle" size={20} color={theme.primary} />
-                  ) : null}
-                </Pressable>
-              );
-            }}
-          />
+      <FlatList
+        data={items}
+        keyExtractor={(item) => item.category.id}
+        style={styles.list}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+        contentContainerStyle={styles.listContent}
+        ListEmptyComponent={
+          <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+            No matching categories found.
+          </Text>
+        }
+        renderItem={({ item }) => {
+          const selected = item.category.id === selectedId;
+          return (
+            <Pressable
+              onPress={() => {
+                onSelect(item.category);
+                setSearch('');
+                onClose();
+              }}
+              accessibilityRole="button"
+              accessibilityState={{ selected }}
+              style={[
+                styles.row,
+                item.isSubcategory && !search ? styles.subRow : null,
+                {
+                  backgroundColor: selected ? theme.primarySoft : 'transparent',
+                  borderColor: selected ? theme.primary : theme.border,
+                },
+              ]}>
+              <CategoryIcon
+                icon={item.category.icon}
+                color={item.category.color}
+                imageUri={item.category.imageUri}
+                size={36}
+              />
+              <View style={styles.rowText}>
+                <Text style={[styles.rowName, { color: theme.text }]} numberOfLines={1}>
+                  {item.category.name}
+                </Text>
+                {item.parentName ? (
+                  <Text style={[styles.rowSub, { color: theme.textMuted }]}>
+                    {item.parentName}
+                  </Text>
+                ) : null}
+              </View>
+              {selected ? (
+                <Ionicons name="checkmark-circle" size={20} color={theme.primary} />
+              ) : null}
+            </Pressable>
+          );
+        }}
+      />
     </BottomSheetModal>
   );
 }
@@ -192,6 +157,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    flexShrink: 0,
   },
   sheetTitle: {
     fontSize: 18,
@@ -205,15 +171,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     paddingHorizontal: Spacing.three - 2,
     minHeight: 42,
+    flexShrink: 0,
   },
   searchInput: {
     flex: 1,
     fontSize: 14,
     paddingVertical: 8,
   },
+  list: {
+    flexShrink: 1,
+    flexGrow: 0,
+  },
   listContent: {
     gap: Spacing.two,
-    paddingBottom: Spacing.four,
+    paddingBottom: Spacing.five,
   },
   row: {
     flexDirection: 'row',

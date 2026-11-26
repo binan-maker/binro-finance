@@ -131,8 +131,10 @@ export function TagSelectionModal({
 
       <ScrollView
         style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}>
+        nestedScrollEnabled
+        showsVerticalScrollIndicator>
         <View style={styles.pillsWrap}>
           {filteredTags.map((tag) => {
             const selected = selectedTagIds.includes(tag.id);
@@ -296,6 +298,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    flexShrink: 0,
   },
   title: {
     fontSize: 17,
@@ -309,6 +312,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.two,
+    flexShrink: 0,
   },
   searchInput: {
     flex: 1,
@@ -316,7 +320,12 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   scroll: {
-    maxHeight: 240,
+    maxHeight: 260,
+    flexShrink: 1,
+    flexGrow: 0,
+  },
+  scrollContent: {
+    paddingBottom: Spacing.two,
   },
   pillsWrap: {
     flexDirection: 'row',

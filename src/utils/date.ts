@@ -1,6 +1,6 @@
 import type { DateFormatPreference } from '@/types/models';
 
-const MONTH_SHORT_NAMES = [
+export const MONTH_SHORT_NAMES = [
   'Jan',
   'Feb',
   'Mar',
@@ -14,6 +14,8 @@ const MONTH_SHORT_NAMES = [
   'Nov',
   'Dec',
 ] as const;
+
+export const MIN_DOB_YEAR = 1900;
 
 export function pad2(value: number): string {
   return String(value).padStart(2, '0');
@@ -320,3 +322,72 @@ export function resolveDatePresetRange(params: {
       return { startDate: null, endDate: null };
   }
 }
+
+export function getDobYearOptions(
+  referenceToday?: string,
+  minYear: number = MIN_DOB_YEAR,
+): number[] {
+  const todayISO =
+    referenceToday && isValidISODate(referenceToday) ? referenceToday : getTodayISODate();
+  const { year: maxYear } = parseISODateParts(todayISO);
+  const safeMinYear = Math.min(minYear, maxYear);
+  const years: number[] = [];
+  for (let y = maxYear; y >= safeMinYear; y -= 1) {
+    years.push(y);
+  }
+  return years;
+}
+
+export function clampCalendarMonthToMaxDate(
+  year: number,
+  month: number,
+  maxDateISO: string,
+): { year: number; month: number } {
+  if (!isValidISODate(maxDateISO)) {
+    return { year, month };
+  }
+  const maxParts = parseISODateParts(maxDateISO);
+  const clampedYear = Math.min(Math.max(year, MIN_DOB_YEAR), maxParts.year);
+  const clampedMonth =
+    clampedYear === maxParts.year ? Math.min(month, maxParts.month) : month;
+  return {
+    year: clampedYear,
+    month: Math.min(Math.max(clampedMonth, 1), 12),
+  };
+}
+
+export function validateDateOfBirth(
+  rawValue: string | null | undefined,
+  referenceToday?: string,
+): { valid: boolean; value: string | null; error?: string } {
+  const trimmed = (rawValue ?? '').trim();
+  if (!trimmed) {
+    return { valid: true, value: null };
+  }
+  if (!isValidISODate(trimmed)) {
+    return {
+      valid: false,
+      value: null,
+      error: 'Please select a valid Date of Birth.',
+    };
+  }
+  const { year } = parseISODateParts(trimmed);
+  if (year < MIN_DOB_YEAR) {
+    return {
+      valid: false,
+      value: null,
+      error: `Date of Birth must be in ${MIN_DOB_YEAR} or later.`,
+    };
+  }
+  const todayISO =
+    referenceToday && isValidISODate(referenceToday) ? referenceToday : getTodayISODate();
+  if (trimmed > todayISO) {
+    return {
+      valid: false,
+      value: null,
+      error: 'Date of Birth cannot be in the future.',
+    };
+  }
+  return { valid: true, value: trimmed };
+}
+

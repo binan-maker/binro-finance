@@ -155,8 +155,9 @@ export default function CurrencyScreen() {
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.code}
+        style={styles.list}
         keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
+        showsVerticalScrollIndicator
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={
           <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
@@ -235,6 +236,9 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  list: {
+    flex: 1,
   },
   listContent: {
     gap: Spacing.two,

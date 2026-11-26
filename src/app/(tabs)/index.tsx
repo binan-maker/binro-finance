@@ -7,6 +7,7 @@ import {
   AppCard,
   AppScreen,
   EmptyState,
+  SignInReminderCard,
 } from '@/components/common';
 import { CategoryDonutChart } from '@/components/reports/Charts';
 import { TransactionRowItem } from '@/components/transactions/TransactionRowItem';
@@ -26,6 +27,7 @@ import {
   getTodayISODate,
 } from '@/utils/date';
 import { formatMoney } from '@/utils/money';
+import { shouldPromptProfileCompletion } from '@/utils/profile';
 
 const CYCLING_PERIODS: readonly DashboardPeriod[] = [
   'this_month',
@@ -45,9 +47,15 @@ export default function HomeScreen() {
   const currencies = useAppStore((s) => s.currencies);
   const transactions = useAppStore((s) => s.transactions);
   const notifications = useAppStore((s) => s.notifications);
+  const authUser = useAppStore((s) => s.authUser);
+  const authBusy = useAppStore((s) => s.authBusy);
+  const signInWithGoogle = useAppStore((s) => s.signInWithGoogle);
+  const homeSignInReminderDismissed = useAppStore((s) => s.homeSignInReminderDismissed);
+  const dismissHomeSignInReminder = useAppStore((s) => s.dismissHomeSignInReminder);
 
   const [period, setPeriod] = useState<DashboardPeriod>('this_month');
   const [selectedCurrency, setSelectedCurrency] = useState<string | null>(null);
+  const [syncPromptError, setSyncPromptError] = useState<string | null>(null);
 
   const todayISO = getTodayISODate();
   const isCompact = width < 360;
@@ -134,6 +142,29 @@ export default function HomeScreen() {
     const idx = CYCLING_PERIODS.indexOf(period);
     const next = CYCLING_PERIODS[(idx + 1) % CYCLING_PERIODS.length];
     setPeriod(next);
+  };
+
+  const handleHomeGoogleSignIn = async () => {
+    if (authBusy) return;
+    setSyncPromptError(null);
+    try {
+      const result = await signInWithGoogle();
+      if (result.status === 'error') {
+        setSyncPromptError(result.message);
+        return;
+      }
+      if (result.status === 'success') {
+        const latest = useAppStore.getState();
+        if (
+          !latest.accountSwitchConflict &&
+          shouldPromptProfileCompletion(latest.settings)
+        ) {
+          router.push('/profile/complete');
+        }
+      }
+    } catch {
+      setSyncPromptError('Unable to complete Google sign-in. Please try again.');
+    }
   };
 
   const hasPreviousPeriod =
@@ -418,6 +449,19 @@ export default function HomeScreen() {
           </View>
         </AppCard>
       </View>
+
+      {/* Optional Discoverable Google Sign-In Card (Signed out & not dismissed) */}
+      {!authUser && !homeSignInReminderDismissed ? (
+        <SignInReminderCard
+          loading={authBusy}
+          errorMessage={syncPromptError}
+          onSignInPress={() => void handleHomeGoogleSignIn()}
+          onDismiss={() => {
+            setSyncPromptError(null);
+            void dismissHomeSignInReminder();
+          }}
+        />
+      ) : null}
 
       {/* Compact Expense Overview Card */}
       <AppCard>

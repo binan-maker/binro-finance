@@ -339,7 +339,8 @@ export default function PaymentMethodsScreen() {
         <ScrollView
           style={styles.modalScroll}
           keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}>
+          nestedScrollEnabled
+          showsVerticalScrollIndicator>
           <View style={styles.modalBody}>
             <AppInput
               label="Method Name"
@@ -519,12 +520,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    flexShrink: 0,
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: '700',
   },
   modalScroll: {
+    flexShrink: 1,
+    flexGrow: 0,
     maxHeight: 380,
   },
   modalBody: {
@@ -560,6 +564,7 @@ const styles = StyleSheet.create({
   modalActions: {
     flexDirection: 'row',
     gap: Spacing.two,
+    flexShrink: 0,
   },
   flex1: {
     flex: 1,

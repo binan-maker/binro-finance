@@ -7,7 +7,17 @@ import type { SqlBindValue, SqlDatabaseAdapter } from '@/database/driver';
 import { runMigrations } from '@/database/migrations';
 import { createRepositories } from '@/database/repositories/factory';
 import { isLocalRelativeImagePath } from '@/services/images/mediaPathUtils';
-import type { AppSettings, UserEntitlement } from '@/types/models';
+import type { AppSettings, Category, Transaction, UserEntitlement } from '@/types/models';
+import {
+  buildCategoryPickerItems,
+  computeModalCardMaxHeight,
+} from '@/utils/modalPickerLayout';
+import {
+  evaluateProfileCompletion,
+  reconcileLocalAndRemoteProfile,
+  shouldPromptProfileCompletion,
+} from '@/utils/profile';
+import { injectTransactionsSignInReminder } from '@/utils/transactionReminder';
 import { validateBackupPayload } from '@/utils/validation';
 
 // Define __DEV__ before Expo packages load dynamically inside Bun
@@ -72,7 +82,15 @@ interface MockRemoteState {
   uploadCount: number;
   analyticsInserts: Record<string, unknown>[];
   nextUpsertErrorTable: string | null;
-  sessionUser: { id: string; email?: string | null; user_metadata?: Record<string, unknown> } | null;
+  simulateMissingDeleteRpc: boolean;
+  deleteRpcCalls: number;
+  sessionUser: {
+    id: string;
+    email?: string | null;
+    created_at?: string | null;
+    last_sign_in_at?: string | null;
+    user_metadata?: Record<string, unknown>;
+  } | null;
   simulateSessionPersistFailure: boolean;
   signInWithIdTokenHandler: (params: {
     provider: string;
@@ -80,8 +98,23 @@ interface MockRemoteState {
     nonce?: string;
   }) => Promise<{
     data: {
-      user: { id: string; email?: string | null; user_metadata?: Record<string, unknown> } | null;
-      session?: { access_token: string; user: { id: string; email?: string | null; user_metadata?: Record<string, unknown> } } | null;
+      user: {
+        id: string;
+        email?: string | null;
+        created_at?: string | null;
+        last_sign_in_at?: string | null;
+        user_metadata?: Record<string, unknown>;
+      } | null;
+      session?: {
+        access_token: string;
+        user: {
+          id: string;
+          email?: string | null;
+          created_at?: string | null;
+          last_sign_in_at?: string | null;
+          user_metadata?: Record<string, unknown>;
+        };
+      } | null;
     };
     error: { message: string } | null;
   }>;
@@ -105,6 +138,8 @@ const remoteState: MockRemoteState = {
   uploadCount: 0,
   analyticsInserts: [],
   nextUpsertErrorTable: null,
+  simulateMissingDeleteRpc: false,
+  deleteRpcCalls: 0,
   sessionUser: null,
   simulateSessionPersistFailure: false,
   signInWithIdTokenHandler: async () => ({
@@ -122,6 +157,8 @@ function resetRemoteState() {
   remoteState.uploadCount = 0;
   remoteState.analyticsInserts = [];
   remoteState.nextUpsertErrorTable = null;
+  remoteState.simulateMissingDeleteRpc = false;
+  remoteState.deleteRpcCalls = 0;
   remoteState.sessionUser = null;
   remoteState.simulateSessionPersistFailure = false;
 }
@@ -195,6 +232,19 @@ function createMockSupabaseClient() {
             error: null,
           };
         },
+        list: async (prefix = '') => {
+          const items: { name: string }[] = [];
+          const normalizedPrefix = prefix ? `${prefix}/` : '';
+          for (const key of remoteState.storage.keys()) {
+            if (key.startsWith(normalizedPrefix)) {
+              const name = key.slice(normalizedPrefix.length);
+              if (name && !name.includes('/')) {
+                items.push({ name });
+              }
+            }
+          }
+          return { data: items, error: null };
+        },
         remove: async (paths: string[]) => {
           for (const p of paths) {
             remoteState.removedPaths.push(p);
@@ -204,13 +254,51 @@ function createMockSupabaseClient() {
         },
       }),
     },
+    rpc: async (fnName: string) => {
+      if (fnName === 'delete_own_account') {
+        remoteState.deleteRpcCalls += 1;
+        if (remoteState.simulateMissingDeleteRpc) {
+          return {
+            data: null,
+            error: {
+              code: 'PGRST202',
+              message: 'Could not find the function public.delete_own_account() in the schema cache',
+            },
+          };
+        }
+        const uid = remoteState.sessionUser?.id;
+        if (!uid) {
+          return { data: null, error: { message: 'Not authenticated' } };
+        }
+        for (const table of Object.keys(remoteState.tables)) {
+          if (table === 'analytics_events') {
+            remoteState.tables[table] = remoteState.tables[table].map((r) =>
+              r.user_id === uid ? { ...r, user_id: null } : r,
+            );
+          } else {
+            remoteState.tables[table] = remoteState.tables[table].filter((r) => r.user_id !== uid);
+          }
+        }
+        remoteState.sessionUser = null;
+        return { data: null, error: null };
+      }
+      return { data: null, error: { message: `Unknown rpc ${fnName}` } };
+    },
     from: (table: string) => {
       const filters: ((row: Record<string, unknown>) => boolean)[] = [];
       const orderBys: { col: string; ascending: boolean }[] = [];
       let limitVal: number | null = null;
+      let mode: 'select' | 'delete' = 'select';
 
       const builder = {
-        select: (_cols?: string) => builder,
+        select: (_cols?: string) => {
+          mode = 'select';
+          return builder;
+        },
+        delete: () => {
+          mode = 'delete';
+          return builder;
+        },
         eq: (col: string, val: unknown) => {
           filters.push((row) => row[col] === val);
           return builder;
@@ -305,6 +393,14 @@ function createMockSupabaseClient() {
         then: (
           resolve: (value: { data: unknown[]; error: null }) => unknown,
         ) => {
+          if (mode === 'delete') {
+            const existing = remoteState.tables[table] ?? [];
+            remoteState.tables[table] = existing.filter(
+              (row) => !filters.every((f) => f(row)),
+            );
+            return Promise.resolve(resolve({ data: [], error: null }));
+          }
+
           let rows = [...(remoteState.tables[table] ?? [])];
           for (const f of filters) {
             rows = rows.filter(f);
@@ -1382,7 +1478,7 @@ describe('Phase 8: V5 Sync, Auth, Media, Security, Privacy Analytics, Entitlemen
     expect(onboardingSource).not.toContain(
       'You can add an opening balance or pick any currency per transaction anytime in Settings.',
     );
-    expect(onboardingSource).toContain('Get started');
+    expect(onboardingSource).toContain('Get Started');
     expect(onboardingSource).toContain('Continue with Google');
     expect(onboardingSource).toContain('/currency?mode=onboarding');
     expect(onboardingSource).toContain('preserveAppearanceWhenDisabled');
@@ -1466,5 +1562,889 @@ describe('Phase 8: V5 Sync, Auth, Media, Security, Privacy Analytics, Entitlemen
       process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID = prevGoogle;
     }
   });
+
+  test('Sign-in notifications: new account welcomes once, session restore stays silent, and returning sign-in emits signed-in notice', async () => {
+    const prevUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+    const prevKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    const prevGoogle = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://abcxyz.supabase.co';
+    process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_real_12345';
+    process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID = '123456-abc.apps.googleusercontent.com';
+
+    useAppStore.setState({
+      isInitialized: false,
+      isLoading: false,
+      authUser: null,
+      authBusy: false,
+      accountSwitchConflict: null,
+    });
+
+    try {
+      await useAppStore.getState().initializeApp();
+
+      const validJwt = createUnsignedTestJwt({
+        sub: 'google-notif-1',
+        email: 'fresh@example.com',
+      });
+      remoteState.signInWithIdTokenHandler = async () => {
+        const user = {
+          id: 'user-notif-1',
+          email: 'fresh@example.com',
+          created_at: '2026-11-26T10:00:00.000Z',
+          last_sign_in_at: '2026-11-26T10:00:01.000Z',
+          user_metadata: { full_name: 'Fresh User' },
+        };
+        return {
+          data: { user, session: { access_token: 'tok-1', user } },
+          error: null,
+        };
+      };
+      mockGoogleSignInBehavior = async () => ({
+        type: 'success',
+        data: {
+          idToken: validJwt,
+          user: { email: 'fresh@example.com', name: 'Fresh User', photo: null },
+        },
+      });
+
+      // 1. First sign-in of brand-new account -> exactly 1 Welcome notification
+      const firstSignIn = await useAppStore.getState().signInWithGoogle();
+      expect(firstSignIn.status).toBe('success');
+      let notifs = useAppStore.getState().notifications;
+      expect(notifs.filter((n) => n.title === 'Welcome to BinRo Finance').length).toBe(1);
+      expect(notifs[0].body).toBe('Your account is ready. Start managing your money with clarity.');
+      expect(notifs[0].metadataJson).toBe('account_welcome:user-notif-1');
+
+      // 2. Automatic session restore / token refresh must NOT emit any notification
+      await useAppStore.getState().applySignedInSession(
+        {
+          userId: 'user-notif-1',
+          email: 'fresh@example.com',
+          googleName: 'Fresh User',
+          googleAvatarUrl: null,
+        },
+        { source: 'session_restore' },
+      );
+      expect(useAppStore.getState().notifications.length).toBe(1);
+
+      // 3. Sign out + explicit sign back in -> emits "Signed in successfully", never duplicates Welcome
+      await useAppStore.getState().signOutCloud();
+      remoteState.signInWithIdTokenHandler = async () => {
+        const user = {
+          id: 'user-notif-1',
+          email: 'fresh@example.com',
+          created_at: '2026-11-26T10:00:00.000Z',
+          last_sign_in_at: '2026-11-26T12:00:00.000Z',
+          user_metadata: { full_name: 'Fresh User' },
+        };
+        return {
+          data: { user, session: { access_token: 'tok-2', user } },
+          error: null,
+        };
+      };
+      const secondSignIn = await useAppStore.getState().signInWithGoogle();
+      expect(secondSignIn.status).toBe('success');
+      notifs = useAppStore.getState().notifications;
+      expect(notifs.filter((n) => n.title === 'Welcome to BinRo Finance').length).toBe(1);
+      expect(notifs.filter((n) => n.title === 'Signed in successfully').length).toBe(1);
+      expect(notifs[0].title).toBe('Signed in successfully');
+      expect(notifs[0].body).toBe("You're back in BinRo Finance.");
+
+      // 4. Switching to another existing account: canceled switch emits nothing; confirmed switch emits Signed in successfully
+      remoteState.tables.profiles.push({
+        user_id: 'user-existing-2',
+        display_name: 'Existing Two',
+        updated_at: '2026-11-20T00:00:00.000Z',
+        server_updated_at: '2026-11-20T00:00:00.000Z',
+      });
+      const existingJwt = createUnsignedTestJwt({
+        sub: 'google-existing-2',
+        email: 'existing2@example.com',
+      });
+      remoteState.signInWithIdTokenHandler = async () => {
+        const user = {
+          id: 'user-existing-2',
+          email: 'existing2@example.com',
+          created_at: '2026-11-01T00:00:00.000Z',
+          last_sign_in_at: '2026-11-26T12:05:00.000Z',
+          user_metadata: { full_name: 'Existing Two' },
+        };
+        return {
+          data: { user, session: { access_token: 'tok-3', user } },
+          error: null,
+        };
+      };
+      mockGoogleSignInBehavior = async () => ({
+        type: 'success',
+        data: {
+          idToken: existingJwt,
+          user: { email: 'existing2@example.com', name: 'Existing Two', photo: null },
+        },
+      });
+
+      await useAppStore.getState().signInWithGoogle();
+      expect(useAppStore.getState().accountSwitchConflict?.newProfile.userId).toBe('user-existing-2');
+      // Still no notification emitted for user-existing-2 before confirmation
+      expect(useAppStore.getState().notifications.length).toBe(2);
+
+      await useAppStore.getState().cancelAccountSwitch();
+      expect(useAppStore.getState().notifications.length).toBe(2);
+
+      await useAppStore.getState().signInWithGoogle();
+      expect(useAppStore.getState().accountSwitchConflict?.newProfile.userId).toBe('user-existing-2');
+      await useAppStore.getState().confirmAccountSwitchReplace();
+      const postSwitchNotifs = useAppStore.getState().notifications;
+      expect(postSwitchNotifs.length).toBe(1);
+      expect(postSwitchNotifs[0].title).toBe('Signed in successfully');
+    } finally {
+      process.env.EXPO_PUBLIC_SUPABASE_URL = prevUrl;
+      process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = prevKey;
+      process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID = prevGoogle;
+    }
+  });
+
+  test('deleteAccountAndData deletes remote storage/account via RPC and RLS fallback, plus wipes local workspace', async () => {
+    const prevUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+    const prevKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    const prevGoogle = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://abcxyz.supabase.co';
+    process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_real_12345';
+    process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID = '123456-abc.apps.googleusercontent.com';
+
+    useAppStore.setState({
+      isInitialized: false,
+      isLoading: false,
+      authUser: null,
+      authBusy: false,
+      accountSwitchConflict: null,
+    });
+
+    try {
+      await useAppStore.getState().initializeApp();
+      const validJwt = createUnsignedTestJwt({
+        sub: 'google-del-1',
+        email: 'delete@example.com',
+      });
+      remoteState.signInWithIdTokenHandler = async () => {
+        const user = {
+          id: 'user-del-1',
+          email: 'delete@example.com',
+          user_metadata: { full_name: 'Delete User' },
+        };
+        return {
+          data: { user, session: { access_token: 'tok-del', user } },
+          error: null,
+        };
+      };
+      mockGoogleSignInBehavior = async () => ({
+        type: 'success',
+        data: {
+          idToken: validJwt,
+          user: { email: 'delete@example.com', name: 'Delete User', photo: null },
+        },
+      });
+
+      await useAppStore.getState().signInWithGoogle();
+      remoteState.storage.set('user-del-1/profile/avatar.jpg', {
+        bytes: new Uint8Array([1, 2, 3]),
+        contentType: 'image/jpeg',
+      });
+      await useAppStore.getState().updateSettings({
+        profileName: 'To Delete',
+        gender: 'non_binary',
+      });
+      // Omitting gender preserves existing stored gender cleanly
+      await useAppStore.getState().updateSettings({
+        profileName: 'Still Preserved',
+      });
+      expect(useAppStore.getState().settings.gender).toBe('non_binary');
+
+      // Delete via RPC
+      await useAppStore.getState().deleteAccountAndData();
+      expect(remoteState.deleteRpcCalls).toBe(1);
+      expect(remoteState.storage.has('user-del-1/profile/avatar.jpg')).toBe(false);
+      expect(remoteState.tables.profiles.some((r) => r.user_id === 'user-del-1')).toBe(false);
+      expect(useAppStore.getState().authUser).toBeNull();
+      expect(useAppStore.getState().syncState.linkedUserId).toBeNull();
+      expect(useAppStore.getState().settings.profileName).toBeNull();
+      expect(useAppStore.getState().notifications.length).toBe(0);
+
+      // Re-sign in and verify RLS fallback when delete_own_account RPC is not deployed yet
+      remoteState.simulateMissingDeleteRpc = true;
+      await useAppStore.getState().signInWithGoogle();
+      expect(remoteState.tables.profiles.some((r) => r.user_id === 'user-del-1')).toBe(true);
+      await useAppStore.getState().deleteAccountAndData();
+      expect(remoteState.tables.profiles.some((r) => r.user_id === 'user-del-1')).toBe(false);
+      expect(remoteState.tables.user_settings.some((r) => r.user_id === 'user-del-1')).toBe(false);
+      expect(useAppStore.getState().authUser).toBeNull();
+    } finally {
+      process.env.EXPO_PUBLIC_SUPABASE_URL = prevUrl;
+      process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = prevKey;
+      process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID = prevGoogle;
+    }
+  });
+
+  test('Profile, DOB picker, Privacy Policy, About, and Account Deletion screens satisfy structural refinements', () => {
+    const completeSource = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/profile/complete.tsx'),
+      'utf8',
+    );
+    expect(completeSource).not.toContain('(Optional)');
+    expect(completeSource).not.toContain('Non-binary');
+    expect(completeSource).not.toContain("'other'");
+    expect(completeSource).toContain('SELECTABLE_GENDER_OPTIONS');
+    expect(completeSource).toContain('DobPickerField');
+
+    const profileSource = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/profile/index.tsx'),
+      'utf8',
+    );
+    expect(profileSource).not.toContain('Using your Google photo by default');
+    expect(profileSource).not.toContain('GENDER_OPTIONS');
+    expect(profileSource).toContain('Add a note');
+    expect(profileSource).toContain('isEditingBio');
+    expect(profileSource).toContain('DobPickerField');
+
+    const settingsSource = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/(tabs)/settings.tsx'),
+      'utf8',
+    );
+    expect(settingsSource).not.toContain('privacyModalVisible');
+    expect(settingsSource).not.toContain('BinRo Finance Version');
+    expect(settingsSource).toContain("router.push('/privacy-policy')");
+    expect(settingsSource).toContain("router.push('/about')");
+
+    const layoutSource = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/_layout.tsx'),
+      'utf8',
+    );
+    expect(layoutSource).toContain('privacy-policy/index');
+    expect(layoutSource).toContain('about/index');
+    expect(layoutSource).toContain("source: 'session_restore'");
+
+    const deletionSql = fs.readFileSync(
+      path.resolve(process.cwd(), 'supabase/migrations/004_account_deletion.sql'),
+      'utf8',
+    );
+    expect(deletionSql).toContain('CREATE OR REPLACE FUNCTION public.delete_own_account()');
+    expect(deletionSql).toContain('GRANT EXECUTE ON FUNCTION public.delete_own_account() TO authenticated');
+  });
+
+  test('Category picker helper includes all active categories without truncation and modal maxHeight adapts to screen and keyboard', () => {
+    const now = '2026-11-26T00:00:00.000Z';
+    const categories: Category[] = [];
+    for (let i = 1; i <= 25; i++) {
+      const parentId = `cat-p-${String(i).padStart(2, '0')}`;
+      categories.push({
+        id: parentId,
+        name: `Parent ${String(i).padStart(2, '0')}`,
+        type: 'expense',
+        color: '#10B981',
+        icon: 'pricetag',
+        imageUri: null,
+        parentId: null,
+        isDefault: false,
+        isArchived: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+      categories.push({
+        id: `cat-c-${String(i).padStart(2, '0')}`,
+        name: `Child ${String(i).padStart(2, '0')}`,
+        type: 'expense',
+        color: '#10B981',
+        icon: 'pricetag',
+        imageUri: null,
+        parentId,
+        isDefault: false,
+        isArchived: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    categories.push({
+      id: 'cat-archived-selected',
+      name: 'Archived Selected',
+      type: 'expense',
+      color: '#64748B',
+      icon: 'archive',
+      imageUri: null,
+      parentId: null,
+      isDefault: false,
+      isArchived: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    categories.push({
+      id: 'cat-archived-hidden',
+      name: 'Archived Hidden',
+      type: 'expense',
+      color: '#64748B',
+      icon: 'archive',
+      imageUri: null,
+      parentId: null,
+      isDefault: false,
+      isArchived: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    categories.push({
+      id: 'cat-income-1',
+      name: 'Salary',
+      type: 'income',
+      color: '#16A34A',
+      icon: 'cash',
+      imageUri: null,
+      parentId: null,
+      isDefault: true,
+      isArchived: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const allExpenseItems = buildCategoryPickerItems({
+      categories,
+      type: 'expense',
+      selectedId: 'cat-archived-selected',
+      search: '',
+    });
+    expect(allExpenseItems.length).toBe(51);
+    expect(allExpenseItems[0]?.category.name).toBe('Archived Selected');
+    expect(allExpenseItems[1]?.category.name).toBe('Parent 01');
+    expect(allExpenseItems[2]?.category.name).toBe('Child 01');
+    expect(allExpenseItems[2]?.parentName).toBe('Parent 01');
+    expect(allExpenseItems[allExpenseItems.length - 1]?.category.name).toBe('Child 25');
+    expect(allExpenseItems.some((item) => item.category.id === 'cat-archived-hidden')).toBe(
+      false,
+    );
+
+    const searchByParent = buildCategoryPickerItems({
+      categories,
+      type: 'expense',
+      selectedId: null,
+      search: 'Parent 25',
+    });
+    expect(searchByParent.map((i) => i.category.id)).toEqual(['cat-p-25', 'cat-c-25']);
+
+    const smallScreen = computeModalCardMaxHeight({
+      windowHeight: 560,
+      topInset: 24,
+      keyboardHeight: 0,
+      variant: 'sheet',
+    });
+    const smallWithKeyboard = computeModalCardMaxHeight({
+      windowHeight: 560,
+      topInset: 24,
+      keyboardHeight: 280,
+      variant: 'sheet',
+    });
+    const normalScreen = computeModalCardMaxHeight({
+      windowHeight: 820,
+      topInset: 36,
+      keyboardHeight: 0,
+      variant: 'sheet',
+    });
+    expect(smallScreen < 560).toBe(true);
+    expect(smallWithKeyboard < smallScreen).toBe(true);
+    expect(smallWithKeyboard >= 200).toBe(true);
+    expect(normalScreen < 820).toBe(true);
+  });
+
+  test('Final UX pass: Google G SVG branding, scrollable modals, Welcome/Home/Settings/Account/Danger Zone integrity', () => {
+    const srcRoot = path.resolve(process.cwd(), 'src');
+    const sourceFiles: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== '__tests__') walk(full);
+        } else if (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx')) {
+          sourceFiles.push(full);
+        }
+      }
+    };
+    walk(srcRoot);
+
+    for (const file of sourceFiles) {
+      const text = fs.readFileSync(file, 'utf8');
+      expect(text.includes('logo-google')).toBe(false);
+    }
+
+    const googleBtnSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/common/GoogleSignInButton.tsx'),
+      'utf8',
+    );
+    expect(googleBtnSrc).toContain('#4285F4');
+    expect(googleBtnSrc).toContain('#34A853');
+    expect(googleBtnSrc).toContain('#FBBC05');
+    expect(googleBtnSrc).toContain('#EA4335');
+
+    const bottomSheetSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/common/BottomSheetModal.tsx'),
+      'utf8',
+    );
+    expect(bottomSheetSrc).toContain("overflow: 'hidden'");
+    expect(bottomSheetSrc).toContain('flexShrink: 1');
+    expect(bottomSheetSrc).not.toContain('innerPressable');
+
+    const categoryModalSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/forms/CategoryPickerModal.tsx'),
+      'utf8',
+    );
+    expect(categoryModalSrc).toContain('nestedScrollEnabled');
+    expect(categoryModalSrc).toContain('flexShrink: 1');
+
+    const onboardingSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/onboarding/index.tsx'),
+      'utf8',
+    );
+    expect(onboardingSrc).toContain('Skip');
+    expect(onboardingSrc).toContain("@/assets/images/icon.png");
+    expect(onboardingSrc).toContain('BinRo Finance');
+    expect(onboardingSrc).toContain('Default Currency');
+    expect(onboardingSrc).toContain('Opening Balance');
+    expect(onboardingSrc).toContain('Get Started');
+    expect(onboardingSrc).toContain('GoogleSignInButton');
+    expect(onboardingSrc).toContain('keyboardAvoiding');
+    expect(onboardingSrc).not.toContain('Optional');
+    expect(onboardingSrc).not.toContain('Welcome 👋');
+    expect(onboardingSrc).not.toContain('ABSTRACT_BAR_GROUPS');
+    expect(onboardingSrc).not.toContain('FEATURE_HIGHLIGHTS');
+    expect(onboardingSrc).not.toContain('Private offline-first ledger');
+    expect(onboardingSrc).not.toContain('Works offline immediately without an account.');
+
+    const homeSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/(tabs)/index.tsx'),
+      'utf8',
+    );
+    expect(homeSrc).toContain('SignInReminderCard');
+    expect(homeSrc).toContain('!authUser && !homeSignInReminderDismissed');
+
+    const transactionsSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/(tabs)/transactions.tsx'),
+      'utf8',
+    );
+    expect(transactionsSrc).toContain('SignInReminderCard');
+    expect(transactionsSrc).toContain('injectTransactionsSignInReminder');
+    expect(transactionsSrc).toContain('!authUser && !transactionsSignInReminderDismissed');
+
+    const reminderCardSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/common/SignInReminderCard.tsx'),
+      'utf8',
+    );
+    expect(reminderCardSrc).toContain('Sync your data');
+    expect(reminderCardSrc).toContain('Sign in with Google to connect your account.');
+    expect(reminderCardSrc).toContain('GoogleSignInButton');
+
+    const settingsSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/(tabs)/settings.tsx'),
+      'utf8',
+    );
+    expect(settingsSrc).toContain('Sign in with Google');
+    expect(settingsSrc).toContain('GoogleSignInButton');
+    expect(settingsSrc).toContain('Google account connected');
+
+    const accountSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/account/index.tsx'),
+      'utf8',
+    );
+    expect(accountSrc).toContain('On-device data');
+    expect(accountSrc).toContain('useState(false)');
+    expect(accountSrc).toContain("router.push('/account/danger-zone')");
+    expect(accountSrc).toContain('GoogleSignInButton');
+    expect(accountSrc).not.toContain('Stored locally on this device in SQLite');
+    expect(accountSrc).not.toContain('Clear All Local Data');
+    expect(accountSrc).not.toContain('Delete Account');
+
+    const completeProfileSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/profile/complete.tsx'),
+      'utf8',
+    );
+    expect(completeProfileSrc).toContain('evaluateProfileCompletion');
+    expect(completeProfileSrc).toContain('completion.missingGender');
+    expect(completeProfileSrc).toContain('completion.missingDateOfBirth');
+    expect(completeProfileSrc).not.toContain('Optional');
+
+    const dangerZoneSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/account/danger-zone.tsx'),
+      'utf8',
+    );
+    expect(dangerZoneSrc).toContain('Clear All Local Data');
+    expect(dangerZoneSrc).toContain('Delete Account');
+    expect(dangerZoneSrc).toContain("DELETE_CONFIRM_KEYWORD = 'DELETE'");
+    expect(dangerZoneSrc).toContain('clearAllLocalData');
+    expect(dangerZoneSrc).toContain('deleteAccountAndData');
+
+    const layoutSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/app/_layout.tsx'),
+      'utf8',
+    );
+    expect(layoutSrc).toContain('account/danger-zone');
+    expect(layoutSrc).toContain('shouldPromptProfileCompletion');
+  });
+
+  test('evaluateProfileCompletion & reconcileLocalAndRemoteProfile handle all returning-user cases without overwriting saved data', () => {
+    const baseSettings: AppSettings = {
+      id: 1,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      openingBalanceCurrencyCode: 'INR',
+      theme: 'system',
+      dateFormat: 'DD MMM YYYY',
+      onboardingCompleted: true,
+      profileName: null,
+      profileBio: null,
+      profileAvatar: null,
+      currencyInitialized: true,
+      showHomeBudgetShortcut: false,
+      gender: null,
+      dateOfBirth: null,
+      googleName: null,
+      googleEmail: null,
+      googleAvatarUrl: null,
+      profileCompletedAt: null,
+      updatedAt: '2026-11-26T00:00:00.000Z',
+    };
+
+    // Case A: Both gender and DOB already saved -> never prompt again even if profileCompletedAt is null
+    const caseA = evaluateProfileCompletion({
+      gender: 'female',
+      dateOfBirth: '1997-04-12',
+      profileCompletedAt: null,
+    });
+    expect(caseA.missingGender).toBe(false);
+    expect(caseA.missingDateOfBirth).toBe(false);
+    expect(caseA.needsPrompt).toBe(false);
+    expect(
+      shouldPromptProfileCompletion({
+        gender: 'female',
+        dateOfBirth: '1997-04-12',
+        profileCompletedAt: null,
+      }),
+    ).toBe(false);
+
+    // Case B: Gender saved, DOB missing -> ask ONLY for DOB
+    const caseB = evaluateProfileCompletion({
+      gender: 'male',
+      dateOfBirth: null,
+      profileCompletedAt: null,
+    });
+    expect(caseB.missingGender).toBe(false);
+    expect(caseB.missingDateOfBirth).toBe(true);
+    expect(caseB.needsPrompt).toBe(true);
+
+    // Case C: DOB saved, Gender missing (or obsolete 'other' mapped safely to unset) -> ask ONLY for Gender
+    const caseC = evaluateProfileCompletion({
+      gender: 'other',
+      dateOfBirth: '1995-08-19',
+      profileCompletedAt: null,
+    });
+    expect(caseC.missingGender).toBe(true);
+    expect(caseC.missingDateOfBirth).toBe(false);
+    expect(caseC.needsPrompt).toBe(true);
+
+    // Case D: Neither saved & never skipped -> show both
+    const caseD = evaluateProfileCompletion({
+      gender: null,
+      dateOfBirth: null,
+      profileCompletedAt: null,
+    });
+    expect(caseD.missingGender).toBe(true);
+    expect(caseD.missingDateOfBirth).toBe(true);
+    expect(caseD.needsPrompt).toBe(true);
+
+    // Case E: Previously skipped -> do not prompt again
+    const caseE = evaluateProfileCompletion({
+      gender: null,
+      dateOfBirth: null,
+      profileCompletedAt: '2026-11-20T09:00:00.000Z',
+    });
+    expect(caseE.needsPrompt).toBe(false);
+
+    // Reconciliation restores remote saved fields into empty local settings,
+    // and never lets blank Google metadata erase existing saved profile fields
+    const hydratedPatch = reconcileLocalAndRemoteProfile({
+      localSettings: baseSettings,
+      remoteProfile: {
+        profileName: 'Saved Cloud Name',
+        profileBio: 'Budgeting daily',
+        gender: 'prefer_not_to_say',
+        dateOfBirth: '1993-11-05T00:00:00.000Z',
+        googleName: 'Cloud Google Name',
+        googleEmail: 'returning@example.com',
+        googleAvatarUrl: 'https://example.com/a.jpg',
+        profileCompletedAt: '2026-11-21T00:00:00.000Z',
+      },
+      authProfile: {
+        email: 'returning@example.com',
+        googleName: null,
+        googleAvatarUrl: null,
+      },
+    });
+    expect(hydratedPatch.profileName).toBe('Saved Cloud Name');
+    expect(hydratedPatch.profileBio).toBe('Budgeting daily');
+    expect(hydratedPatch.gender).toBe('prefer_not_to_say');
+    expect(hydratedPatch.dateOfBirth).toBe('1993-11-05');
+    expect(hydratedPatch.googleName).toBe('Cloud Google Name');
+    expect(hydratedPatch.googleAvatarUrl).toBe('https://example.com/a.jpg');
+    expect(hydratedPatch.profileCompletedAt).toBe('2026-11-21T00:00:00.000Z');
+
+    const nonClobberPatch = reconcileLocalAndRemoteProfile({
+      localSettings: {
+        ...baseSettings,
+        profileName: 'Local Custom',
+        gender: 'male',
+        dateOfBirth: '1990-01-15',
+        googleName: 'Existing Google Name',
+        googleAvatarUrl: 'https://example.com/existing.jpg',
+      },
+      remoteProfile: {
+        profileName: null,
+        profileBio: null,
+        gender: null,
+        dateOfBirth: null,
+        googleName: null,
+        googleEmail: null,
+        googleAvatarUrl: null,
+        profileCompletedAt: null,
+      },
+      authProfile: {
+        email: '',
+        googleName: null,
+        googleAvatarUrl: null,
+      },
+    });
+    expect(Object.keys(nonClobberPatch).length).toBe(0);
+  });
+
+  test('Returning user sign-in after fresh local reset restores cloud gender & DOB before pushing and does not re-prompt', async () => {
+    const prevUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+    const prevKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    const prevGoogle = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://abcxyz.supabase.co';
+    process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_real_12345';
+    process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID = '123456-abc.apps.googleusercontent.com';
+
+    useAppStore.setState({
+      isInitialized: false,
+      isLoading: false,
+      authUser: null,
+      authBusy: false,
+      accountSwitchConflict: null,
+    });
+
+    try {
+      await useAppStore.getState().initializeApp();
+
+      // Seed existing remote Supabase profile for returning user-ret-1
+      remoteState.tables.profiles.push({
+        user_id: 'user-ret-1',
+        display_name: 'Returning User',
+        bio: 'Saving steadily',
+        avatar_remote_path: null,
+        google_name: 'Returning Google',
+        google_email: 'returning@example.com',
+        google_avatar_url: 'https://example.com/ret.jpg',
+        gender: 'female',
+        date_of_birth: '1994-07-22',
+        profile_completed_at: null,
+        updated_at: '2026-11-20T10:00:00.000Z',
+        server_updated_at: '2026-11-20T10:00:00.000Z',
+      });
+
+      const retJwt = createUnsignedTestJwt({
+        sub: 'google-ret-1',
+        email: 'returning@example.com',
+      });
+      remoteState.signInWithIdTokenHandler = async () => {
+        const user = {
+          id: 'user-ret-1',
+          email: 'returning@example.com',
+          created_at: '2026-11-01T00:00:00.000Z',
+          last_sign_in_at: '2026-11-26T09:00:00.000Z',
+          user_metadata: { full_name: 'Returning Google' },
+        };
+        return {
+          data: { user, session: { access_token: 'ret-tok', user } },
+          error: null,
+        };
+      };
+      mockGoogleSignInBehavior = async () => ({
+        type: 'success',
+        data: {
+          idToken: retJwt,
+          user: { email: 'returning@example.com', name: null, photo: null },
+        },
+      });
+
+      const res = await useAppStore.getState().signInWithGoogle();
+      expect(res.status).toBe('success');
+
+      const settings = useAppStore.getState().settings;
+      expect(settings.gender).toBe('female');
+      expect(settings.dateOfBirth).toBe('1994-07-22');
+      expect(settings.googleAvatarUrl).toBe('https://example.com/ret.jpg');
+      expect(shouldPromptProfileCompletion(settings)).toBe(false);
+
+      // Verify remote Supabase row was NOT overwritten with nulls during initial link push
+      const remoteRow = remoteState.tables.profiles.find((r) => r.user_id === 'user-ret-1');
+      expect(remoteRow?.gender).toBe('female');
+      expect(remoteRow?.date_of_birth).toBe('1994-07-22');
+    } finally {
+      process.env.EXPO_PUBLIC_SUPABASE_URL = prevUrl;
+      process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = prevKey;
+      process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID = prevGoogle;
+    }
+  });
+
+  test('completeOnboarding saves explicit minor-unit opening balance and Skip/omitted preserves existing opening balance', async () => {
+    useAppStore.setState({
+      isInitialized: false,
+      isLoading: false,
+      authUser: null,
+      authBusy: false,
+      accountSwitchConflict: null,
+    });
+    await useAppStore.getState().initializeApp();
+
+    // 1. Fresh install enters explicit opening balance
+    await useAppStore.getState().completeOnboarding({
+      currencyCode: 'INR',
+      openingBalanceMinor: 25050,
+    });
+    let st = useAppStore.getState().settings;
+    expect(st.onboardingCompleted).toBe(true);
+    expect(st.currencyCode).toBe('INR');
+    expect(st.openingBalanceMinor).toBe(25050);
+    expect(st.openingBalanceCurrencyCode).toBe('INR');
+
+    // 2. Skipping or omitting openingBalanceMinor preserves existing balance & currency
+    await useAppStore.getState().completeOnboarding({
+      currencyCode: 'EUR',
+    });
+    st = useAppStore.getState().settings;
+    expect(st.currencyCode).toBe('EUR');
+    expect(st.openingBalanceMinor).toBe(25050);
+    expect(st.openingBalanceCurrencyCode).toBe('INR');
+  });
+
+  test('Transactions inline sign-in reminder respects threshold (>= 6), placement after 5th tx, sign-in hiding, and dismissal persistence', async () => {
+    const makeTx = (index: number, date = '2026-11-26'): Transaction => ({
+      id: `tx-${index}`,
+      type: 'expense',
+      title: `Tx ${index}`,
+      amountMinor: 1000,
+      currencyCode: 'INR',
+      categoryId: 'cat-exp-food',
+      categoryNameSnapshot: 'Food & Drink',
+      paymentMethodId: 'pm-upi',
+      paymentMethod: 'UPI',
+      tagIds: [],
+      transactionDate: date,
+      note: null,
+      createdAt: `2026-11-26T10:${String(index).padStart(2, '0')}:00.000Z`,
+      updatedAt: `2026-11-26T10:${String(index).padStart(2, '0')}:00.000Z`,
+    });
+
+    // 1. Short list (5 transactions) -> NO reminder
+    const shortSections = injectTransactionsSignInReminder(
+      [
+        {
+          title: 'Today',
+          date: '2026-11-26',
+          dailyNets: [{ currencyCode: 'INR', netMinor: -5000 }],
+          data: [makeTx(1), makeTx(2), makeTx(3), makeTx(4), makeTx(5)],
+        },
+      ],
+      true,
+    );
+    expect(shortSections[0]?.data.some((item) => item.kind === 'signin_reminder')).toBe(false);
+
+    // 2. Long list (7 transactions across 2 sections) -> 1 reminder after 5th tx
+    const longSections = injectTransactionsSignInReminder(
+      [
+        {
+          title: 'Today',
+          date: '2026-11-26',
+          dailyNets: [{ currencyCode: 'INR', netMinor: -3000 }],
+          data: [makeTx(1), makeTx(2), makeTx(3)],
+        },
+        {
+          title: 'Yesterday',
+          date: '2026-11-25',
+          dailyNets: [{ currencyCode: 'INR', netMinor: -4000 }],
+          data: [
+            makeTx(4, '2026-11-25'),
+            makeTx(5, '2026-11-25'),
+            makeTx(6, '2026-11-25'),
+            makeTx(7, '2026-11-25'),
+          ],
+        },
+      ],
+      true,
+    );
+    expect(longSections[0]?.dailyNets[0]?.netMinor).toBe(-3000);
+    expect(longSections[1]?.dailyNets[0]?.netMinor).toBe(-4000);
+    expect(longSections[0]?.data.every((item) => item.kind === 'tx')).toBe(true);
+    expect(longSections[1]?.data.map((item) => item.kind)).toEqual([
+      'tx',
+      'tx',
+      'signin_reminder',
+      'tx',
+      'tx',
+    ]);
+
+    // 3. Signed in / dismissed -> NO reminder even for long list
+    const hiddenSections = injectTransactionsSignInReminder(
+      [
+        {
+          title: 'Today',
+          date: '2026-11-26',
+          dailyNets: [{ currencyCode: 'INR', netMinor: -6000 }],
+          data: [makeTx(1), makeTx(2), makeTx(3), makeTx(4), makeTx(5), makeTx(6)],
+        },
+      ],
+      false,
+    );
+    expect(hiddenSections.flatMap((s) => s.data).some((i) => i.kind === 'signin_reminder')).toBe(false);
+
+    // 4. Dismissal flags persist across store re-initialization and reset on clearAllLocalData
+    useAppStore.setState({
+      isInitialized: false,
+      isLoading: false,
+      homeSignInReminderDismissed: false,
+      transactionsSignInReminderDismissed: false,
+    });
+    await useAppStore.getState().initializeApp();
+    expect(useAppStore.getState().homeSignInReminderDismissed).toBe(false);
+    expect(useAppStore.getState().transactionsSignInReminderDismissed).toBe(false);
+
+    await useAppStore.getState().dismissHomeSignInReminder();
+    await useAppStore.getState().dismissTransactionsSignInReminder();
+    expect(useAppStore.getState().homeSignInReminderDismissed).toBe(true);
+    expect(useAppStore.getState().transactionsSignInReminderDismissed).toBe(true);
+
+    // Simulate app restart
+    useAppStore.setState({
+      isInitialized: false,
+      isLoading: false,
+      homeSignInReminderDismissed: false,
+      transactionsSignInReminderDismissed: false,
+    });
+    await useAppStore.getState().initializeApp();
+    expect(useAppStore.getState().homeSignInReminderDismissed).toBe(true);
+    expect(useAppStore.getState().transactionsSignInReminderDismissed).toBe(true);
+
+    // Clear all local data resets dismissal flags cleanly
+    await useAppStore.getState().clearAllLocalData();
+    expect(useAppStore.getState().homeSignInReminderDismissed).toBe(false);
+    expect(useAppStore.getState().transactionsSignInReminderDismissed).toBe(false);
+  });
 });
+
+
+
 

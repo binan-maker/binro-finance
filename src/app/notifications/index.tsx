@@ -106,7 +106,7 @@ export default function NotificationsScreen() {
         <EmptyState
           icon="notifications-off-outline"
           title="No notifications yet"
-          description="Backup and budget alerts appear here."
+          description="Account, backup, and budget alerts appear here."
         />
       ) : (
         <View style={styles.list}>

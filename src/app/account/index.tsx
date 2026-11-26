@@ -9,7 +9,7 @@ import {
   AppCard,
   AppHeader,
   AppScreen,
-  ConfirmDialog,
+  GoogleSignInButton,
 } from '@/components/common';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -17,13 +17,21 @@ import { resolveLocalImageUri } from '@/services/images/localImageStorage';
 import { useAppStore } from '@/store/app-store';
 import type { SyncStatus } from '@/types/models';
 import { formatDateForDisplay } from '@/utils/date';
-import { getProfileInitials, PROFILE_AVATAR_COLOR } from '@/utils/profile';
+import {
+  getProfileInitials,
+  PROFILE_AVATAR_COLOR,
+  shouldPromptProfileCompletion,
+} from '@/utils/profile';
 
-function getSyncStatusMeta(
+function getAccountStatusMeta(
+  signedIn: boolean,
   status: SyncStatus,
   hasLastSynced: boolean,
   theme: ReturnType<typeof useTheme>,
 ): { label: string; color: string; bg: string } {
+  if (!signedIn) {
+    return { label: 'Local Mode', color: theme.textSecondary, bg: theme.surfaceElevated };
+  }
   switch (status) {
     case 'syncing':
       return { label: 'Syncing...', color: theme.primary, bg: theme.primarySoft };
@@ -32,15 +40,14 @@ function getSyncStatusMeta(
     case 'error':
       return { label: 'Sync Error', color: theme.danger, bg: theme.surfaceElevated };
     case 'pending_link':
-      return { label: 'Pending Link', color: theme.warning, bg: theme.surfaceElevated };
     case 'needs_account_switch':
       return { label: 'Action Needed', color: theme.warning, bg: theme.surfaceElevated };
     case 'idle':
     default:
       if (hasLastSynced) {
-        return { label: 'Synced', color: theme.income, bg: theme.primarySoft };
+        return { label: 'Signed In · Synced', color: theme.income, bg: theme.primarySoft };
       }
-      return { label: 'Ready', color: theme.textSecondary, bg: theme.surfaceElevated };
+      return { label: 'Signed In', color: theme.primary, bg: theme.primarySoft };
   }
 }
 
@@ -49,10 +56,6 @@ export default function AccountManagementScreen() {
   const router = useRouter();
 
   const settings = useAppStore((s) => s.settings);
-  const transactions = useAppStore((s) => s.transactions);
-  const categories = useAppStore((s) => s.categories);
-  const tags = useAppStore((s) => s.tags);
-  const budgets = useAppStore((s) => s.budgets);
   const authUser = useAppStore((s) => s.authUser);
   const authBusy = useAppStore((s) => s.authBusy);
   const syncState = useAppStore((s) => s.syncState);
@@ -60,10 +63,8 @@ export default function AccountManagementScreen() {
   const signInWithGoogle = useAppStore((s) => s.signInWithGoogle);
   const syncNow = useAppStore((s) => s.syncNow);
   const signOutCloud = useAppStore((s) => s.signOutCloud);
-  const clearAllLocalData = useAppStore((s) => s.clearAllLocalData);
 
-  const [confirmVisible, setConfirmVisible] = useState(false);
-  const [clearing, setClearing] = useState(false);
+  const [onDeviceExpanded, setOnDeviceExpanded] = useState(false);
   const [syncingManual, setSyncingManual] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [failedAvatarUri, setFailedAvatarUri] = useState<string | null>(null);
@@ -72,10 +73,19 @@ export default function AccountManagementScreen() {
     resolveLocalImageUri(settings.profileAvatar) ??
     resolveLocalImageUri(authUser?.googleAvatarUrl ?? settings.googleAvatarUrl);
   const showAvatar = Boolean(avatarUri && failedAvatarUri !== avatarUri);
+
+  const displayName = authUser
+    ? authUser.googleName || settings.profileName?.trim() || 'Google Account'
+    : settings.profileName?.trim() || 'Local Profile';
+  const identitySub = authUser
+    ? authUser.email ?? settings.googleEmail ?? 'Connected with Google'
+    : 'Not signed in';
+
   const initials = getProfileInitials(
     authUser?.googleName || settings.profileName || authUser?.email,
   );
-  const statusMeta = getSyncStatusMeta(
+  const statusMeta = getAccountStatusMeta(
+    Boolean(authUser),
     syncState.syncStatus,
     Boolean(syncState.lastSyncedAt),
     theme,
@@ -96,7 +106,10 @@ export default function AccountManagementScreen() {
       }
       if (result.status === 'success') {
         const latest = useAppStore.getState();
-        if (!latest.accountSwitchConflict && !latest.settings.profileCompletedAt) {
+        if (
+          !latest.accountSwitchConflict &&
+          shouldPromptProfileCompletion(latest.settings)
+        ) {
           router.push('/profile/complete');
         }
       }
@@ -128,65 +141,49 @@ export default function AccountManagementScreen() {
     }
   };
 
-  const handleClearAll = async () => {
-    if (clearing) return;
-    setClearing(true);
-    setErrorMsg(null);
-    try {
-      await clearAllLocalData();
-      setConfirmVisible(false);
-      router.replace('/onboarding');
-    } catch {
-      setConfirmVisible(false);
-      setErrorMsg('Unable to clear local data. Please try again.');
-    } finally {
-      setClearing(false);
-    }
-  };
-
   return (
     <AppScreen edges={['top', 'bottom', 'left', 'right']}>
       <AppHeader title="Account Management" showBack />
 
       <AppCard>
+        <View style={styles.cardHeader}>
+          <View
+            style={[
+              styles.avatarBadge,
+              { backgroundColor: PROFILE_AVATAR_COLOR },
+            ]}>
+            {showAvatar && avatarUri ? (
+              <Image
+                source={{ uri: avatarUri }}
+                style={styles.avatarImage}
+                contentFit="cover"
+                onError={() => setFailedAvatarUri(avatarUri)}
+              />
+            ) : (
+              <Text style={styles.avatarInitials}>{initials}</Text>
+            )}
+          </View>
+          <View style={styles.flex1}>
+            <Text style={[styles.cardTitle, { color: theme.text }]} numberOfLines={1}>
+              {displayName}
+            </Text>
+            <Text style={[styles.cardSub, { color: theme.textSecondary }]} numberOfLines={1}>
+              {identitySub}
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.statusBadge,
+              { backgroundColor: statusMeta.bg, borderColor: theme.border },
+            ]}>
+            <Text style={[styles.statusBadgeText, { color: statusMeta.color }]}>
+              {statusMeta.label}
+            </Text>
+          </View>
+        </View>
+
         {authUser ? (
           <>
-            <View style={styles.cardHeader}>
-              <View
-                style={[
-                  styles.avatarBadge,
-                  { backgroundColor: PROFILE_AVATAR_COLOR },
-                ]}>
-                {showAvatar && avatarUri ? (
-                  <Image
-                    source={{ uri: avatarUri }}
-                    style={styles.avatarImage}
-                    contentFit="cover"
-                    onError={() => setFailedAvatarUri(avatarUri)}
-                  />
-                ) : (
-                  <Text style={styles.avatarInitials}>{initials}</Text>
-                )}
-              </View>
-              <View style={styles.flex1}>
-                <Text style={[styles.cardTitle, { color: theme.text }]} numberOfLines={1}>
-                  {authUser.googleName || settings.profileName || 'Google Account'}
-                </Text>
-                <Text style={[styles.cardSub, { color: theme.textSecondary }]} numberOfLines={1}>
-                  {authUser.email ?? settings.googleEmail ?? 'Signed in with Google'}
-                </Text>
-              </View>
-              <View
-                style={[
-                  styles.statusBadge,
-                  { backgroundColor: statusMeta.bg, borderColor: theme.border },
-                ]}>
-                <Text style={[styles.statusBadgeText, { color: statusMeta.color }]}>
-                  {statusMeta.label}
-                </Text>
-              </View>
-            </View>
-
             <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
             <View style={styles.syncMetaRows}>
@@ -200,11 +197,11 @@ export default function AccountManagementScreen() {
               </View>
               <View style={styles.syncMetaRow}>
                 <Text style={[styles.syncMetaLabel, { color: theme.textSecondary }]}>
-                  Pending local changes
+                  Pending changes
                 </Text>
                 <Text style={[styles.syncMetaValue, { color: theme.text }]}>
                   {pendingOutboxCount === 0
-                    ? 'All backed up'
+                    ? 'Up to date'
                     : `${pendingOutboxCount} pending`}
                 </Text>
               </View>
@@ -237,71 +234,49 @@ export default function AccountManagementScreen() {
                 />
               </View>
             </View>
-
-            <Text style={[styles.cloudHint, { color: theme.textMuted }]}>
-              Signing out keeps all financial records stored locally on this device.
-            </Text>
           </>
         ) : (
           <>
-            <View style={styles.cardHeader}>
-              <View style={[styles.iconBadge, { backgroundColor: theme.primarySoft }]}>
-                <Ionicons name="cloud-upload-outline" size={20} color={theme.primary} />
-              </View>
-              <View style={styles.flex1}>
-                <Text style={[styles.cardTitle, { color: theme.text }]}>
-                  Cloud Backup & Sync (Optional)
-                </Text>
-                <Text style={[styles.cardSub, { color: theme.textSecondary }]}>
-                  Back up your ledger and custom icons privately with Google
-                </Text>
-              </View>
-            </View>
-
             {syncState.linkedUserEmail ? (
-              <Text style={[styles.cloudHint, { color: theme.textSecondary }]}>
-                Previously linked to {syncState.linkedUserEmail}
-                {pendingOutboxCount > 0
-                  ? ` · ${pendingOutboxCount} local change(s) queued`
-                  : ''}
+              <Text style={[styles.linkedHint, { color: theme.textSecondary }]}>
+                Previously linked: {syncState.linkedUserEmail}
               </Text>
             ) : null}
 
-            <AppButton
+            <GoogleSignInButton
               label="Continue with Google"
-              variant="outline"
-              icon={<Ionicons name="logo-google" size={18} color={theme.text} />}
+              size="md"
               onPress={() => void handleGoogleSignIn()}
               loading={authBusy}
-              fullWidth
             />
           </>
         )}
       </AppCard>
 
       <AppCard>
-        <View style={styles.cardHeader}>
-          <View style={[styles.iconBadge, { backgroundColor: theme.primarySoft }]}>
-            <Ionicons name="phone-portrait-outline" size={20} color={theme.primary} />
-          </View>
-          <View style={styles.flex1}>
-            <Text style={[styles.cardTitle, { color: theme.text }]}>
-              {settings.profileName?.trim() || 'Local Device Ledger'}
+        <Pressable
+          onPress={() => setOnDeviceExpanded((prev) => !prev)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: onDeviceExpanded }}
+          style={({ pressed }) => [styles.actionRow, pressed && styles.pressed]}>
+          <View style={styles.actionLeft}>
+            <Ionicons name="phone-portrait-outline" size={20} color={theme.textSecondary} />
+            <Text style={[styles.actionLabel, { color: theme.text }]}>
+              On-device data
             </Text>
-            <Text style={[styles.cardSub, { color: theme.textSecondary }]}>
-              Stored locally on this device in SQLite
-            </Text>
           </View>
-        </View>
+          <Ionicons
+            name={onDeviceExpanded ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={theme.textMuted}
+          />
+        </Pressable>
 
-        <View style={[styles.divider, { backgroundColor: theme.border }]} />
-
-        <View style={styles.statsGrid}>
-          <StatTile label="Transactions" value={String(transactions.length)} />
-          <StatTile label="Categories" value={String(categories.length)} />
-          <StatTile label="Tags" value={String(tags.length)} />
-          <StatTile label="Budgets" value={String(budgets.length)} />
-        </View>
+        {onDeviceExpanded ? (
+          <Text style={[styles.onDeviceCopy, { color: theme.textSecondary }]}>
+            Your records are saved directly on this device so the app works offline even without signing in.
+          </Text>
+        ) : null}
       </AppCard>
 
       <AppCard>
@@ -319,48 +294,25 @@ export default function AccountManagementScreen() {
         </Pressable>
       </AppCard>
 
-      <AppCard>
-        <Text style={[styles.dangerTitle, { color: theme.danger }]}>Danger Zone</Text>
-        <Text style={[styles.dangerHint, { color: theme.textSecondary }]}>
-          Permanently remove all local transactions, tags, custom categories, custom payment methods, and budgets on this device.
-        </Text>
-        <AppButton
-          label="Clear All Local Data"
-          variant="danger"
-          onPress={() => setConfirmVisible(true)}
-        />
-      </AppCard>
-
       {errorMsg ? (
         <Text style={[styles.errorText, { color: theme.danger }]}>{errorMsg}</Text>
       ) : null}
 
-      <ConfirmDialog
-        visible={confirmVisible}
-        title="Clear All Local Data?"
-        message="All local data on this device will be permanently deleted. This action cannot be undone."
-        confirmLabel="Clear All Data"
-        cancelLabel="Cancel"
-        destructive
-        loading={clearing}
-        onConfirm={() => void handleClearAll()}
-        onCancel={() => setConfirmVisible(false)}
-      />
+      <AppCard style={styles.dangerEntryCard}>
+        <Pressable
+          onPress={() => router.push('/account/danger-zone')}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.actionRow, pressed && styles.pressed]}>
+          <View style={styles.actionLeft}>
+            <Ionicons name="warning-outline" size={18} color={theme.danger} />
+            <Text style={[styles.dangerRowLabel, { color: theme.danger }]}>
+              Danger Zone
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
+        </Pressable>
+      </AppCard>
     </AppScreen>
-  );
-}
-
-function StatTile({ label, value }: { label: string; value: string }) {
-  const theme = useTheme();
-  return (
-    <View
-      style={[
-        styles.statTile,
-        { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
-      ]}>
-      <Text style={[styles.statValue, { color: theme.text }]}>{value}</Text>
-      <Text style={[styles.statLabel, { color: theme.textSecondary }]}>{label}</Text>
-    </View>
   );
 }
 
@@ -369,13 +321,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.two + 2,
-  },
-  iconBadge: {
-    width: 42,
-    height: 42,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   avatarBadge: {
     width: 44,
@@ -424,7 +369,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: Spacing.two,
   },
-  cloudHint: {
+  linkedHint: {
     fontSize: 12,
     lineHeight: 17,
   },
@@ -447,27 +392,6 @@ const styles = StyleSheet.create({
     height: 1,
     width: '100%',
   },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.two,
-  },
-  statTile: {
-    width: '48%',
-    flexGrow: 1,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    paddingHorizontal: Spacing.three - 2,
-    paddingVertical: Spacing.two + 2,
-    gap: 2,
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  statLabel: {
-    fontSize: 12,
-  },
   actionRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -483,13 +407,16 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
   },
-  dangerTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  dangerHint: {
+  onDeviceCopy: {
     fontSize: 13,
     lineHeight: 19,
+  },
+  dangerEntryCard: {
+    marginTop: Spacing.one,
+  },
+  dangerRowLabel: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   errorText: {
     fontSize: 13,

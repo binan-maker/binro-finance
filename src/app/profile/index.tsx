@@ -11,6 +11,7 @@ import {
   AppInput,
   AppScreen,
 } from '@/components/common';
+import { DobPickerField } from '@/components/forms';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -19,19 +20,14 @@ import {
   resolveLocalImageUri,
 } from '@/services/images/localImageStorage';
 import { useAppStore } from '@/store/app-store';
-import type { GenderOption } from '@/types/models';
-import { isValidISODate } from '@/utils/date';
-import { getProfileInitials, PROFILE_AVATAR_COLOR } from '@/utils/profile';
+import { validateDateOfBirth } from '@/utils/date';
+import {
+  getBioPreview,
+  getProfileInitials,
+  PROFILE_AVATAR_COLOR,
+} from '@/utils/profile';
 
 export { getProfileInitials } from '@/utils/profile';
-
-const GENDER_OPTIONS: readonly { label: string; value: GenderOption }[] = [
-  { label: 'Prefer not to say', value: 'prefer_not_to_say' },
-  { label: 'Female', value: 'female' },
-  { label: 'Male', value: 'male' },
-  { label: 'Non-binary', value: 'non_binary' },
-  { label: 'Other', value: 'other' },
-];
 
 export default function ProfileScreen() {
   const theme = useTheme();
@@ -45,7 +41,10 @@ export default function ProfileScreen() {
     settings.profileName ?? settings.googleName ?? '',
   );
   const [bio, setBio] = useState(settings.profileBio ?? '');
-  const [gender, setGender] = useState<GenderOption | null>(settings.gender ?? null);
+  const [bioDraft, setBioDraft] = useState(settings.profileBio ?? '');
+  const [isEditingBio, setIsEditingBio] = useState(false);
+  const [savingBio, setSavingBio] = useState(false);
+
   const [dateOfBirth, setDateOfBirth] = useState(settings.dateOfBirth ?? '');
   const [avatarPath, setAvatarPath] = useState<string | null>(() =>
     resolveLocalImageUri(settings.profileAvatar) ? settings.profileAvatar : null,
@@ -75,6 +74,7 @@ export default function ProfileScreen() {
     resolvedAvatarUri && failedAvatarUri !== resolvedAvatarUri,
   );
   const initials = getProfileInitials(displayName || settings.googleEmail);
+  const bioPreview = getBioPreview(bio);
 
   const handlePickPhoto = async () => {
     if (pickingPhoto || saving) return;
@@ -111,34 +111,58 @@ export default function ProfileScreen() {
     setSavedNotice(false);
   };
 
+  const handleOpenBioEditor = () => {
+    setBioDraft(bio);
+    setIsEditingBio(true);
+    setSavedNotice(false);
+    setErrorMsg(null);
+  };
+
+  const handleCancelBioEditor = () => {
+    setBioDraft(bio);
+    setIsEditingBio(false);
+  };
+
+  const handleSaveBioInline = async () => {
+    if (savingBio || saving) return;
+    const trimmed = bioDraft.trim();
+    setSavingBio(true);
+    setErrorMsg(null);
+    try {
+      await updateSettings({
+        profileBio: trimmed || null,
+      });
+      setBio(trimmed);
+      setBioDraft(trimmed);
+      setIsEditingBio(false);
+    } catch {
+      setErrorMsg('Unable to update note. Please try again.');
+    } finally {
+      setSavingBio(false);
+    }
+  };
+
   const handleSave = async () => {
     if (saving) return;
     setErrorMsg(null);
     setSavedNotice(false);
 
-    const trimmedDob = dateOfBirth.trim();
-    if (trimmedDob) {
-      if (!isValidISODate(trimmedDob)) {
-        setErrorMsg('Enter Date of Birth in YYYY-MM-DD format (e.g. 1998-05-14).');
-        return;
-      }
-      const parsed = new Date(`${trimmedDob}T00:00:00Z`);
-      if (parsed.getTime() > Date.now() || parsed.getUTCFullYear() < 1900) {
-        setErrorMsg('Please enter a valid Date of Birth.');
-        return;
-      }
+    const dobCheck = validateDateOfBirth(dateOfBirth);
+    if (!dobCheck.valid) {
+      setErrorMsg(dobCheck.error ?? 'Please select a valid Date of Birth.');
+      return;
     }
 
+    const activeBio = (isEditingBio ? bioDraft : bio).trim();
     setSaving(true);
     const previousSavedAvatar = settings.profileAvatar;
 
     try {
       await updateSettings({
         profileName: displayName.trim() || null,
-        profileBio: bio.trim() || null,
+        profileBio: activeBio || null,
         profileAvatar: avatarPath,
-        gender,
-        dateOfBirth: trimmedDob || null,
+        dateOfBirth: dobCheck.value,
         profileCompletedAt: settings.profileCompletedAt ?? new Date().toISOString(),
       });
 
@@ -146,6 +170,9 @@ export default function ProfileScreen() {
         deleteStoredImage(previousSavedAvatar);
       }
       unsavedUploadRef.current = null;
+      setBio(activeBio);
+      setBioDraft(activeBio);
+      setIsEditingBio(false);
 
       setSavedNotice(true);
       if (router.canGoBack()) {
@@ -203,12 +230,6 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {!customAvatarUri && googleFallbackUri ? (
-          <Text style={[styles.fallbackHint, { color: theme.textMuted }]}>
-            Using your Google photo by default. Upload a photo anytime to customize it.
-          </Text>
-        ) : null}
-
         <View style={styles.photoActionsRow}>
           <View style={styles.flex1}>
             <AppButton
@@ -249,71 +270,82 @@ export default function ProfileScreen() {
           maxLength={40}
         />
 
-        <AppInput
-          label="Bio / Note"
-          value={bio}
-          onChangeText={(text) => {
-            setBio(text);
-            setSavedNotice(false);
-            if (errorMsg) setErrorMsg(null);
-          }}
-          placeholder="Personal finance goal or note"
-          maxLength={120}
-          multiline
-          numberOfLines={3}
-          style={styles.bioInput}
-        />
-
         <View style={styles.fieldGroup}>
           <Text style={[styles.fieldLabel, { color: theme.text }]}>
-            Gender (Optional)
+            Bio / Note
           </Text>
-          <View style={styles.chipWrap}>
-            {GENDER_OPTIONS.map((opt) => {
-              const selected = gender === opt.value;
-              return (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => {
-                    setGender(selected ? null : opt.value);
-                    setSavedNotice(false);
-                  }}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  style={[
-                    styles.chip,
-                    {
-                      backgroundColor: selected
-                        ? theme.primarySoft
-                        : theme.surfaceElevated,
-                      borderColor: selected ? theme.primary : theme.border,
-                    },
-                  ]}>
-                  <Text
-                    style={[
-                      styles.chipText,
-                      { color: selected ? theme.primary : theme.text },
-                    ]}>
-                    {opt.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+
+          {isEditingBio ? (
+            <View style={styles.bioEditorBlock}>
+              <AppInput
+                value={bioDraft}
+                onChangeText={setBioDraft}
+                placeholder="Personal finance goal or note"
+                maxLength={120}
+                multiline
+                numberOfLines={3}
+                style={styles.bioInput}
+              />
+              <View style={styles.bioActionsRow}>
+                <AppButton
+                  label="Cancel"
+                  variant="outline"
+                  size="sm"
+                  onPress={handleCancelBioEditor}
+                  disabled={savingBio}
+                />
+                <AppButton
+                  label="Save"
+                  size="sm"
+                  onPress={() => void handleSaveBioInline()}
+                  loading={savingBio}
+                />
+              </View>
+            </View>
+          ) : (
+            <Pressable
+              onPress={handleOpenBioEditor}
+              accessibilityRole="button"
+              accessibilityLabel={bioPreview ? 'Edit note' : 'Add a note'}
+              style={({ pressed }) => [
+                styles.bioCollapsedRow,
+                {
+                  backgroundColor: theme.surface,
+                  borderColor: theme.border,
+                },
+                pressed && styles.pressed,
+              ]}>
+              <Text
+                style={[
+                  styles.bioCollapsedText,
+                  { color: bioPreview ? theme.text : theme.textMuted },
+                ]}
+                numberOfLines={1}>
+                {bioPreview ?? 'Add a note'}
+              </Text>
+              <View style={styles.bioCollapsedAction}>
+                <Ionicons
+                  name={bioPreview ? 'create-outline' : 'add-outline'}
+                  size={16}
+                  color={theme.primary}
+                />
+                <Text style={[styles.bioActionLabel, { color: theme.primary }]}>
+                  {bioPreview ? 'Edit' : 'Add'}
+                </Text>
+              </View>
+            </Pressable>
+          )}
         </View>
 
-        <AppInput
-          label="Date of Birth (Optional)"
+        <DobPickerField
+          label="Date of Birth"
           value={dateOfBirth}
-          onChangeText={(text) => {
-            setDateOfBirth(text);
+          dateFormat={settings.dateFormat}
+          onChange={(nextIso) => {
+            setDateOfBirth(nextIso);
             setSavedNotice(false);
             if (errorMsg) setErrorMsg(null);
           }}
-          placeholder="YYYY-MM-DD"
-          maxLength={10}
-          keyboardType="numbers-and-punctuation"
-          helperText="Format: YYYY-MM-DD (e.g. 1998-05-14)"
         />
       </AppCard>
 
@@ -361,10 +393,6 @@ const styles = StyleSheet.create({
   localNote: {
     fontSize: 13,
   },
-  fallbackHint: {
-    fontSize: 12,
-    lineHeight: 17,
-  },
   photoActionsRow: {
     flexDirection: 'row',
     gap: Spacing.two,
@@ -372,31 +400,50 @@ const styles = StyleSheet.create({
   flex1: {
     flex: 1,
   },
-  bioInput: {
-    minHeight: 84,
-    textAlignVertical: 'top',
-  },
   fieldGroup: {
-    gap: Spacing.two,
+    gap: Spacing.one + 2,
   },
   fieldLabel: {
     fontSize: 13,
     fontWeight: '600',
   },
-  chipWrap: {
+  bioCollapsedRow: {
+    minHeight: 46,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.three - 2,
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: Spacing.two,
   },
-  chip: {
-    paddingHorizontal: Spacing.three - 2,
-    paddingVertical: Spacing.one + 3,
-    borderRadius: Radius.full,
-    borderWidth: 1,
+  bioCollapsedText: {
+    fontSize: 14,
+    flex: 1,
   },
-  chipText: {
+  bioCollapsedAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  bioActionLabel: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  bioEditorBlock: {
+    gap: Spacing.two,
+  },
+  bioInput: {
+    minHeight: 84,
+    textAlignVertical: 'top',
+  },
+  bioActionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: Spacing.two,
+  },
+  pressed: {
+    opacity: 0.75,
   },
   errorText: {
     fontSize: 13,

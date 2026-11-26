@@ -39,6 +39,8 @@ interface CalendarMonthGridProps {
   selectedDate?: string;
   rangeStart?: string;
   rangeEnd?: string;
+  minDate?: string;
+  maxDate?: string;
   todayISO: string;
   indicators?: Map<string, CalendarDayIndicator>;
   showDots?: boolean;
@@ -51,6 +53,8 @@ export function CalendarMonthGrid({
   selectedDate,
   rangeStart,
   rangeEnd,
+  minDate,
+  maxDate,
   todayISO,
   indicators,
   showDots = false,
@@ -103,6 +107,10 @@ export function CalendarMonthGrid({
           }
 
           const cellISO = toISODate(year, month, day);
+          const isBeforeMin = Boolean(minDate && cellISO < minDate);
+          const isAfterMax = Boolean(maxDate && cellISO > maxDate);
+          const isDisabled = isBeforeMin || isAfterMax;
+
           const isSingleSelected = selectedDate ? cellISO === selectedDate : false;
           const isRangeStart = rangeStart ? cellISO === rangeStart : false;
           const isRangeEnd = rangeEnd ? cellISO === rangeEnd : false;
@@ -117,9 +125,15 @@ export function CalendarMonthGrid({
           return (
             <Pressable
               key={cellISO}
-              onPress={() => onSelectDate(cellISO)}
+              disabled={isDisabled}
+              onPress={() => {
+                if (!isDisabled) {
+                  onSelectDate(cellISO);
+                }
+              }}
               accessibilityRole="button"
               accessibilityLabel={cellISO}
+              accessibilityState={{ disabled: isDisabled, selected: isSelected }}
               style={[
                 styles.dayCell,
                 { width: metrics.cellSize, height: rowHeight },
@@ -135,10 +149,11 @@ export function CalendarMonthGrid({
                     height: metrics.circleSize,
                     borderRadius: Radius.full,
                   },
-                  isSelected && { backgroundColor: theme.primary },
+                  isSelected && !isDisabled && { backgroundColor: theme.primary },
                   !isSelected &&
                     !isInRange &&
-                    isToday && {
+                    isToday &&
+                    !isDisabled && {
                       borderWidth: 1.5,
                       borderColor: theme.primary,
                     },
@@ -148,11 +163,14 @@ export function CalendarMonthGrid({
                     styles.dayText,
                     Platform.OS === 'android' && styles.androidTextFix,
                     {
-                      color: isSelected
-                        ? theme.primaryText
-                        : isInRange
-                          ? theme.primary
-                          : theme.text,
+                      color: isDisabled
+                        ? theme.textMuted
+                        : isSelected
+                          ? theme.primaryText
+                          : isInRange
+                            ? theme.primary
+                            : theme.text,
+                      opacity: isDisabled ? 0.42 : 1,
                       fontWeight: isSelected || isToday ? '700' : '500',
                     },
                   ]}>

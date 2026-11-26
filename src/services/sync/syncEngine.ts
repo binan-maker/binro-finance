@@ -15,6 +15,12 @@ import type {
   ThemePreference,
   TransactionType,
 } from '@/types/models';
+import {
+  normalizeDateOfBirthValue,
+  reconcileLocalAndRemoteProfile,
+  type RemoteProfileSnapshot,
+  sanitizeSelectableGender,
+} from '@/utils/profile';
 
 import {
   ensureLocalMediaForRemotePath,
@@ -87,6 +93,63 @@ export async function inspectAccountLinkState(
   };
 }
 
+export async function checkRemoteAccountExists(userId: string): Promise<boolean | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  try {
+    const { data: profileRows, error: profileErr } = await supabase
+      .from('profiles')
+      .select('user_id')
+      .eq('user_id', userId)
+      .limit(1);
+    if (profileErr) return null;
+    if ((profileRows ?? []).length > 0) return true;
+
+    const { data: settingsRows, error: settingsErr } = await supabase
+      .from('user_settings')
+      .select('user_id')
+      .eq('user_id', userId)
+      .limit(1);
+    if (settingsErr) return null;
+    return (settingsRows ?? []).length > 0;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchRemoteProfileRow(
+  userId: string,
+): Promise<RemoteProfileSnapshot | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('user_id', userId)
+      .limit(1);
+    if (error) return null;
+    const row = (data?.[0] as RemoteProfileRow | undefined) ?? null;
+    if (!row) return null;
+
+    return {
+      profileName: row.display_name ?? null,
+      profileBio: row.bio ?? null,
+      gender: sanitizeSelectableGender(row.gender) ?? row.gender ?? null,
+      dateOfBirth: normalizeDateOfBirthValue(row.date_of_birth),
+      googleName: row.google_name ?? null,
+      googleEmail: row.google_email ?? null,
+      googleAvatarUrl: row.google_avatar_url ?? null,
+      profileCompletedAt: row.profile_completed_at ?? null,
+      updatedAt: row.updated_at ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function linkLocalWorkspaceToUser(params: {
   userId: string;
   email: string | null;
@@ -96,6 +159,20 @@ export async function linkLocalWorkspaceToUser(params: {
     throw new Error(
       'This device already holds financial data from a different signed-in Google account.',
     );
+  }
+
+  // Reconcile existing remote profile data BEFORE linking & enqueuing local profile,
+  // so a new/empty local workspace never pushes null profile fields over saved cloud data.
+  const remoteProfile = await fetchRemoteProfileRow(params.userId);
+  if (remoteProfile) {
+    const localSettings = await repositories.settings.get();
+    const patch = reconcileLocalAndRemoteProfile({
+      localSettings,
+      remoteProfile,
+    });
+    if (Object.keys(patch).length > 0) {
+      await repositories.settings.update(patch);
+    }
   }
 
   await repositories.sync.updateSyncState({
@@ -872,6 +949,15 @@ export async function runSyncCycle(userId: string): Promise<SyncRunResult> {
   });
 
   return inFlightSyncPromise;
+}
+
+export async function waitForInFlightSync(): Promise<void> {
+  if (!inFlightSyncPromise) return;
+  try {
+    await inFlightSyncPromise;
+  } catch {
+    // Non-fatal wait before teardown
+  }
 }
 
 export function getOutboxEntityLabel(item: SyncOutboxRow): string {

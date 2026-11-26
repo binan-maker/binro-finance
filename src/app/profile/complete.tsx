@@ -1,28 +1,26 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   AppButton,
   AppCard,
   AppHeader,
-  AppInput,
   AppScreen,
 } from '@/components/common';
+import { DobPickerField } from '@/components/forms';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/store/app-store';
+import type { UpdateSettingsInput } from '@/types/database';
 import type { GenderOption } from '@/types/models';
-import { isValidISODate } from '@/utils/date';
-
-const GENDER_OPTIONS: readonly { label: string; value: GenderOption }[] = [
-  { label: 'Prefer not to say', value: 'prefer_not_to_say' },
-  { label: 'Female', value: 'female' },
-  { label: 'Male', value: 'male' },
-  { label: 'Non-binary', value: 'non_binary' },
-  { label: 'Other', value: 'other' },
-];
+import { validateDateOfBirth } from '@/utils/date';
+import {
+  evaluateProfileCompletion,
+  sanitizeSelectableGender,
+  SELECTABLE_GENDER_OPTIONS,
+} from '@/utils/profile';
 
 export default function CompleteProfileScreen() {
   const theme = useTheme();
@@ -31,35 +29,49 @@ export default function CompleteProfileScreen() {
   const settings = useAppStore((s) => s.settings);
   const updateSettings = useAppStore((s) => s.updateSettings);
 
-  const [gender, setGender] = useState<GenderOption | null>(settings.gender ?? null);
+  const completion = evaluateProfileCompletion(settings);
+
+  const [gender, setGender] = useState<GenderOption | null>(() =>
+    sanitizeSelectableGender(settings.gender),
+  );
   const [dateOfBirth, setDateOfBirth] = useState(settings.dateOfBirth ?? '');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!completion.missingGender && !completion.missingDateOfBirth) {
+      router.replace('/(tabs)');
+    }
+  }, [completion.missingGender, completion.missingDateOfBirth, router]);
+
+  if (!completion.missingGender && !completion.missingDateOfBirth) {
+    return null;
+  }
 
   const handleSave = async () => {
     if (saving) return;
     setErrorMsg(null);
 
-    const trimmedDob = dateOfBirth.trim();
-    if (trimmedDob) {
-      if (!isValidISODate(trimmedDob)) {
-        setErrorMsg('Enter Date of Birth in YYYY-MM-DD format (e.g. 1998-05-14).');
+    const patch: UpdateSettingsInput = {
+      profileCompletedAt: new Date().toISOString(),
+    };
+
+    if (completion.missingGender) {
+      patch.gender = sanitizeSelectableGender(gender);
+    }
+
+    if (completion.missingDateOfBirth) {
+      const dobCheck = validateDateOfBirth(dateOfBirth);
+      if (!dobCheck.valid) {
+        setErrorMsg(dobCheck.error ?? 'Please select a valid Date of Birth.');
         return;
       }
-      const parsed = new Date(`${trimmedDob}T00:00:00Z`);
-      if (parsed.getTime() > Date.now() || parsed.getUTCFullYear() < 1900) {
-        setErrorMsg('Please enter a valid Date of Birth.');
-        return;
-      }
+      patch.dateOfBirth = dobCheck.value;
     }
 
     setSaving(true);
     try {
-      await updateSettings({
-        gender,
-        dateOfBirth: trimmedDob || null,
-        profileCompletedAt: new Date().toISOString(),
-      });
+      await updateSettings(patch);
       router.replace('/(tabs)');
     } catch {
       setErrorMsg('Unable to save profile details right now.');
@@ -85,7 +97,6 @@ export default function CompleteProfileScreen() {
 
   return (
     <AppScreen
-      keyboardAvoiding
       edges={['top', 'bottom', 'left', 'right']}
       footer={
         <View style={styles.footerRow}>
@@ -117,61 +128,59 @@ export default function CompleteProfileScreen() {
         <Text style={[styles.title, { color: theme.text }]}>
           Personalize your account
         </Text>
-        <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
-          Both details below are optional and stay private to your workspace.
-        </Text>
       </View>
 
-      <AppCard>
-        <Text style={[styles.fieldLabel, { color: theme.text }]}>
-          Gender (Optional)
-        </Text>
-        <View style={styles.chipWrap}>
-          {GENDER_OPTIONS.map((opt) => {
-            const selected = gender === opt.value;
-            return (
-              <Pressable
-                key={opt.value}
-                onPress={() => setGender(selected ? null : opt.value)}
-                accessibilityRole="button"
-                accessibilityState={{ selected }}
-                style={[
-                  styles.chip,
-                  {
-                    backgroundColor: selected
-                      ? theme.primarySoft
-                      : theme.surfaceElevated,
-                    borderColor: selected ? theme.primary : theme.border,
-                  },
-                ]}>
-                <Text
+      {completion.missingGender ? (
+        <AppCard>
+          <Text style={[styles.fieldLabel, { color: theme.text }]}>
+            Gender
+          </Text>
+          <View style={styles.chipWrap}>
+            {SELECTABLE_GENDER_OPTIONS.map((opt) => {
+              const selected = gender === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setGender(selected ? null : opt.value)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
                   style={[
-                    styles.chipText,
-                    { color: selected ? theme.primary : theme.text },
+                    styles.chip,
+                    {
+                      backgroundColor: selected
+                        ? theme.primarySoft
+                        : theme.surfaceElevated,
+                      borderColor: selected ? theme.primary : theme.border,
+                    },
                   ]}>
-                  {opt.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </AppCard>
+                  <Text
+                    style={[
+                      styles.chipText,
+                      { color: selected ? theme.primary : theme.text },
+                    ]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </AppCard>
+      ) : null}
 
-      <AppCard>
-        <AppInput
-          label="Date of Birth (Optional)"
-          value={dateOfBirth}
-          onChangeText={(text) => {
-            setDateOfBirth(text);
-            if (errorMsg) setErrorMsg(null);
-          }}
-          placeholder="YYYY-MM-DD"
-          maxLength={10}
-          keyboardType="numbers-and-punctuation"
-          helperText="Example: 1998-05-14"
-          error={errorMsg}
-        />
-      </AppCard>
+      {completion.missingDateOfBirth ? (
+        <AppCard>
+          <DobPickerField
+            label="Date of Birth"
+            value={dateOfBirth}
+            dateFormat={settings.dateFormat}
+            onChange={(nextIso) => {
+              setDateOfBirth(nextIso);
+              if (errorMsg) setErrorMsg(null);
+            }}
+            error={errorMsg}
+          />
+        </AppCard>
+      ) : null}
     </AppScreen>
   );
 }
@@ -191,10 +200,6 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 22,
     fontWeight: '700',
-  },
-  subtitle: {
-    fontSize: 14,
-    lineHeight: 20,
   },
   fieldLabel: {
     fontSize: 14,

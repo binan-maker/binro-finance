@@ -511,11 +511,11 @@ export class SQLiteSyncRepository implements ISyncRepository {
         if (!currentUpdatedAt || bundle.profile.updatedAt >= currentUpdatedAt) {
           await db.runAsync(
             `UPDATE app_settings
-             SET profile_name = ?,
-                 profile_bio = ?,
-                 profile_avatar = ?,
-                 gender = ?,
-                 date_of_birth = ?,
+             SET profile_name = COALESCE(?, profile_name),
+                 profile_bio = COALESCE(?, profile_bio),
+                 profile_avatar = COALESCE(?, profile_avatar),
+                 gender = COALESCE(?, gender),
+                 date_of_birth = COALESCE(?, date_of_birth),
                  google_name = COALESCE(?, google_name),
                  google_email = COALESCE(?, google_email),
                  google_avatar_url = COALESCE(?, google_avatar_url),

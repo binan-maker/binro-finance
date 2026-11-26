@@ -1,5 +1,4 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import Constants from 'expo-constants';
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -12,6 +11,7 @@ import {
   AppInput,
   AppScreen,
   BottomSheetModal,
+  GoogleSignInButton,
   SegmentedControl,
   type SegmentOption,
 } from '@/components/common';
@@ -23,7 +23,11 @@ import { useAppStore } from '@/store/app-store';
 import type { DateFormatPreference, ThemePreference } from '@/types/models';
 import { formatDateForDisplay, getTodayISODate } from '@/utils/date';
 import { formatMinorToMajorInput, formatMoney } from '@/utils/money';
-import { getProfileInitials, PROFILE_AVATAR_COLOR } from '@/utils/profile';
+import {
+  getProfileInitials,
+  PROFILE_AVATAR_COLOR,
+  shouldPromptProfileCompletion,
+} from '@/utils/profile';
 import { validateNonNegativeAmountInput } from '@/utils/validation';
 
 const THEME_OPTIONS: readonly SegmentOption<ThemePreference>[] = [
@@ -46,14 +50,15 @@ export default function SettingsScreen() {
   const settings = useAppStore((s) => s.settings);
   const currencies = useAppStore((s) => s.currencies);
   const authUser = useAppStore((s) => s.authUser);
+  const authBusy = useAppStore((s) => s.authBusy);
   const syncState = useAppStore((s) => s.syncState);
+  const signInWithGoogle = useAppStore((s) => s.signInWithGoogle);
   const updateSettings = useAppStore((s) => s.updateSettings);
   const openingBalanceDraft = useAppStore((s) => s.openingBalanceDraft);
   const setOpeningBalanceDraft = useAppStore((s) => s.setOpeningBalanceDraft);
 
   const [dateModalVisible, setDateModalVisible] = useState(false);
   const [balanceModalVisible, setBalanceModalVisible] = useState(false);
-  const [privacyModalVisible, setPrivacyModalVisible] = useState(false);
 
   const [balanceInput, setBalanceInput] = useState('');
   const [balanceCurrencyInput, setBalanceCurrencyInput] = useState(
@@ -62,6 +67,7 @@ export default function SettingsScreen() {
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [savingBalance, setSavingBalance] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [failedAvatarUri, setFailedAvatarUri] = useState<string | null>(null);
 
   useFocusEffect(
@@ -78,7 +84,6 @@ export default function SettingsScreen() {
 
   const activeCurrency = getCurrencyConfig(settings.currencyCode, currencies);
   const openingCurrency = getCurrencyConfig(balanceCurrencyInput, currencies);
-  const appVersion = Constants.expoConfig?.version ?? '1.0.0';
   const todayISO = getTodayISODate();
 
   const avatarImageUri =
@@ -164,6 +169,29 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleSettingsGoogleSignIn = async () => {
+    if (authBusy) return;
+    setAuthError(null);
+    try {
+      const result = await signInWithGoogle();
+      if (result.status === 'error') {
+        setAuthError(result.message);
+        return;
+      }
+      if (result.status === 'success') {
+        const latest = useAppStore.getState();
+        if (
+          !latest.accountSwitchConflict &&
+          shouldPromptProfileCompletion(latest.settings)
+        ) {
+          router.push('/profile/complete');
+        }
+      }
+    } catch {
+      setAuthError('Unable to sign in with Google right now. Please try again.');
+    }
+  };
+
   return (
     <AppScreen>
       <AppHeader
@@ -214,6 +242,60 @@ export default function SettingsScreen() {
           <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
         </Pressable>
       </AppCard>
+
+      {authUser ? (
+        <AppCard>
+          <Pressable
+            onPress={() => router.push('/account')}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.accountSummaryRow, pressed && styles.pressed]}>
+            <View style={styles.accountSummaryTextCol}>
+              <Text style={[styles.accountSummaryTitle, { color: theme.text }]} numberOfLines={1}>
+                {authUser.email ?? settings.googleEmail ?? 'Google Account'}
+              </Text>
+              <Text style={[styles.accountSummarySub, { color: theme.textSecondary }]}>
+                Google account connected
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.accountStatusChip,
+                { backgroundColor: theme.primarySoft, borderColor: theme.border },
+              ]}>
+              <Text style={[styles.accountStatusChipText, { color: theme.primary }]}>
+                {accountStatusLabel}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
+          </Pressable>
+        </AppCard>
+      ) : (
+        <AppCard>
+          <View style={styles.accountSummaryTextCol}>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>
+              Sign in with Google
+            </Text>
+            <Text style={[styles.accountSummarySub, { color: theme.textSecondary }]}>
+              {syncState.linkedUserEmail
+                ? `Reconnect ${syncState.linkedUserEmail} to sync your data`
+                : 'Connect your Google account for cloud sync'}
+            </Text>
+          </View>
+
+          {authError ? (
+            <Text style={[styles.errorBanner, { color: theme.danger }]}>
+              {authError}
+            </Text>
+          ) : null}
+
+          <GoogleSignInButton
+            label="Continue with Google"
+            size="md"
+            loading={authBusy}
+            onPress={() => void handleSettingsGoogleSignIn()}
+          />
+        </AppCard>
+      )}
 
       <AppCard>
         <Text style={[styles.sectionTitle, { color: theme.text }]}>Preferences</Text>
@@ -335,24 +417,14 @@ export default function SettingsScreen() {
           icon="shield-checkmark-outline"
           label="Privacy Policy"
           value={authUser ? 'Local + Cloud Sync' : 'Local-First'}
-          onPress={() => setPrivacyModalVisible(true)}
+          onPress={() => router.push('/privacy-policy')}
         />
         <View style={[styles.divider, { backgroundColor: theme.border }]} />
-        <View style={styles.staticRow}>
-          <View style={styles.rowLeft}>
-            <Ionicons
-              name="information-circle-outline"
-              size={20}
-              color={theme.textSecondary}
-            />
-            <Text style={[styles.rowTitle, { color: theme.text }]}>
-              BinRo Finance Version
-            </Text>
-          </View>
-          <Text style={[styles.rowValue, { color: theme.textSecondary }]}>
-            v{appVersion}
-          </Text>
-        </View>
+        <SettingsRow
+          icon="information-circle-outline"
+          label="About"
+          onPress={() => router.push('/about')}
+        />
       </AppCard>
 
       <BottomSheetModal
@@ -473,31 +545,6 @@ export default function SettingsScreen() {
         </View>
       </BottomSheetModal>
 
-      <BottomSheetModal
-        visible={privacyModalVisible}
-        onClose={() => setPrivacyModalVisible(false)}
-        variant="center">
-        <View style={styles.sheetHeader}>
-          <Text style={[styles.modalTitle, { color: theme.text }]}>
-            Privacy Policy
-          </Text>
-          <Pressable
-            onPress={() => setPrivacyModalVisible(false)}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Close privacy policy">
-            <Ionicons name="chevron-down" size={22} color={theme.textSecondary} />
-          </Pressable>
-        </View>
-        <Text style={[styles.privacyText, { color: theme.textSecondary }]}>
-          BinRo Finance stores all your financial records locally on this device in SQLite. Google Sign-In and cloud backup are completely optional: when signed in, your ledger and custom icons sync privately to your personal workspace protected by per-user access rules. Privacy-safe app health analytics never include amounts, balances, notes, categories, or personal details.
-        </Text>
-        <AppButton
-          label="Done"
-          onPress={() => setPrivacyModalVisible(false)}
-          fullWidth
-        />
-      </BottomSheetModal>
     </AppScreen>
   );
 }
@@ -505,7 +552,7 @@ export default function SettingsScreen() {
 interface SettingsRowProps {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
-  value: string;
+  value?: string;
   onPress: () => void;
 }
 
@@ -522,9 +569,11 @@ function SettingsRow({ icon, label, value, onPress }: SettingsRowProps) {
         <Text style={[styles.rowTitle, { color: theme.text }]}>{label}</Text>
       </View>
       <View style={styles.rowRight}>
-        <Text style={[styles.rowValue, { color: theme.textSecondary }]} numberOfLines={1}>
-          {value}
-        </Text>
+        {value ? (
+          <Text style={[styles.rowValue, { color: theme.textSecondary }]} numberOfLines={1}>
+            {value}
+          </Text>
+        ) : null}
         <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
       </View>
     </Pressable>
@@ -652,15 +701,39 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
-  privacyText: {
-    fontSize: 14,
-    lineHeight: 20,
-  },
   dialogButtons: {
     flexDirection: 'row',
     gap: Spacing.two,
   },
   flex1: {
     flex: 1,
+  },
+  accountSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+  },
+  accountSummaryTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  accountSummaryTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  accountSummarySub: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  accountStatusChip: {
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 4,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  accountStatusChipText: {
+    fontSize: 11,
+    fontWeight: '700',
   },
 });

@@ -701,7 +701,11 @@ export default function ReportsScreen() {
           </Pressable>
         </View>
 
-        <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          style={styles.modalScroll}
+          contentContainerStyle={styles.modalScrollContent}
+          nestedScrollEnabled
+          showsVerticalScrollIndicator>
           <Pressable
             onPress={() => {
               setSelectedCategoryId(null);
@@ -964,6 +968,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    flexShrink: 0,
   },
   modalTitle: {
     fontSize: 17,
@@ -973,7 +978,11 @@ const styles = StyleSheet.create({
     gap: Spacing.one,
   },
   modalScroll: {
-    maxHeight: 400,
+    flexShrink: 1,
+    flexGrow: 0,
+  },
+  modalScrollContent: {
+    paddingBottom: Spacing.four,
   },
   catOptionRow: {
     flexDirection: 'row',

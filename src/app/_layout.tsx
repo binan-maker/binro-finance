@@ -12,6 +12,7 @@ import { trackAnalyticsEvent } from '@/services/analytics/analyticsService';
 import { extractAuthProfileFromSessionUser } from '@/services/auth/googleAuthService';
 import { getSupabaseClient, registerSupabaseAppStateRefresh } from '@/services/supabase/client';
 import { useAppStore } from '@/store/app-store';
+import { shouldPromptProfileCompletion } from '@/utils/profile';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -23,6 +24,8 @@ export default function RootLayout() {
   const error = useAppStore((s) => s.error);
   const onboardingCompleted = useAppStore((s) => s.settings.onboardingCompleted);
   const profileCompletedAt = useAppStore((s) => s.settings.profileCompletedAt);
+  const savedGender = useAppStore((s) => s.settings.gender);
+  const savedDateOfBirth = useAppStore((s) => s.settings.dateOfBirth);
   const authUser = useAppStore((s) => s.authUser);
   const authBusy = useAppStore((s) => s.authBusy);
   const accountSwitchConflict = useAppStore((s) => s.accountSwitchConflict);
@@ -89,7 +92,9 @@ export default function RootLayout() {
         const store = useAppStore.getState();
         const profile = extractAuthProfileFromSessionUser(data.session.user);
         if (store.authUser?.userId !== profile.userId && !store.authBusy) {
-          void store.applySignedInSession(profile).catch(() => {});
+          void store
+            .applySignedInSession(profile, { source: 'session_restore' })
+            .catch(() => {});
         }
       })
       .catch(() => {});
@@ -106,7 +111,9 @@ export default function RootLayout() {
       ) {
         const profile = extractAuthProfileFromSessionUser(session.user);
         if (store.authUser?.userId !== profile.userId && !store.authBusy) {
-          void store.applySignedInSession(profile).catch(() => {});
+          void store
+            .applySignedInSession(profile, { source: 'session_restore' })
+            .catch(() => {});
         }
       } else if (event === 'SIGNED_OUT' && store.authUser && !store.authBusy) {
         void store.signOutCloud().catch(() => {});
@@ -128,7 +135,14 @@ export default function RootLayout() {
     if (!onboardingCompleted && !allowedBeforeOnboarding) {
       router.replace('/onboarding');
     } else if (onboardingCompleted && inOnboarding) {
-      if (authUser && !profileCompletedAt) {
+      if (
+        authUser &&
+        shouldPromptProfileCompletion({
+          gender: savedGender,
+          dateOfBirth: savedDateOfBirth,
+          profileCompletedAt,
+        })
+      ) {
         router.replace('/profile/complete');
       } else {
         router.replace('/(tabs)');
@@ -138,6 +152,8 @@ export default function RootLayout() {
     isInitialized,
     onboardingCompleted,
     profileCompletedAt,
+    savedGender,
+    savedDateOfBirth,
     authUser,
     authBusy,
     accountSwitchConflict,
@@ -194,6 +210,7 @@ export default function RootLayout() {
         <Stack.Screen name="profile/complete" options={{ gestureEnabled: false }} />
         <Stack.Screen name="profile/index" />
         <Stack.Screen name="account/index" />
+        <Stack.Screen name="account/danger-zone" />
         <Stack.Screen name="currency/index" />
         <Stack.Screen name="transactions/add" options={{ presentation: 'modal' }} />
         <Stack.Screen name="transactions/filters" />
@@ -205,6 +222,8 @@ export default function RootLayout() {
         <Stack.Screen name="payment-methods/index" />
         <Stack.Screen name="budgets/index" />
         <Stack.Screen name="backup/index" />
+        <Stack.Screen name="privacy-policy/index" />
+        <Stack.Screen name="about/index" />
       </Stack>
 
       <AccountSwitchConflictModal

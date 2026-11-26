@@ -861,7 +861,8 @@ export default function BudgetsScreen() {
             <ScrollView
               style={styles.catScroll}
               keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}>
+              nestedScrollEnabled
+              showsVerticalScrollIndicator>
               <View style={styles.catChips}>
                 {expenseCategories.map((cat) => {
                   const isCurrentEdit = selectedCategoryId === cat.id;
@@ -1140,6 +1141,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: Spacing.two,
+    flexShrink: 0,
   },
   modalTitle: {
     fontSize: 17,
@@ -1156,6 +1158,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   catScroll: {
+    flexShrink: 1,
+    flexGrow: 0,
     maxHeight: 200,
   },
   catChips: {
@@ -1176,6 +1180,7 @@ const styles = StyleSheet.create({
   modalActions: {
     flexDirection: 'row',
     gap: Spacing.two,
+    flexShrink: 0,
   },
   flex1: {
     flex: 1,
