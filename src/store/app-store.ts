@@ -8,6 +8,8 @@ import {
 import { initializeDatabase } from '@/database';
 import { repositories } from '@/database/repositories';
 import { calculateBudgetProgress } from '@/services/calculations/financialCalculations';
+import { materializeBackupMediaAssets } from '@/services/backup/backupService';
+import { clearAllStoredImages } from '@/services/images/localImageStorage';
 import {
   mergeCurrencyCatalog,
   syncCurrencyCatalog,
@@ -91,6 +93,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   profileBio: null,
   profileAvatar: null,
   currencyInitialized: false,
+  showHomeBudgetShortcut: false,
 };
 
 interface AppStoreState {
@@ -344,24 +347,39 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (created.type === 'expense') {
       const { budgets, categories, currencies, notifications } = get();
       const { year, month } = parseISODateParts(created.transactionDate);
-      const matchingBudgets = budgets.filter(
-        (b) =>
-          b.year === year &&
-          b.month === month &&
-          b.currencyCode.toUpperCase() === created.currencyCode.toUpperCase() &&
-          (b.categoryId === null || b.categoryId === created.categoryId),
-      );
+      const matchingBudgets = budgets.filter((b) => {
+        if (b.currencyCode.toUpperCase() !== created.currencyCode.toUpperCase()) return false;
+        if (b.categoryId !== null && b.categoryId !== created.categoryId) return false;
+        if (b.period === 'yearly') return b.year === year;
+        if (b.period === 'biweekly') return true;
+        return b.year === year && b.month === month;
+      });
 
       for (const budget of matchingBudgets) {
         const category = budget.categoryId
           ? categories.find((c) => c.id === budget.categoryId) ?? null
           : null;
-        const progress = calculateBudgetProgress({ budget, transactions, category });
-        if (progress.isExceeded) {
-          const dedupeKey = `budget_exceeded:${budget.id}:${year}-${month}`;
+        const progress = calculateBudgetProgress({
+          budget,
+          transactions,
+          category,
+          referenceDate: created.transactionDate,
+        });
+        if (
+          created.transactionDate >= progress.periodStartDate &&
+          created.transactionDate <= progress.periodEndDate &&
+          progress.isExceeded
+        ) {
+          const dedupeKey = `budget_exceeded:${budget.id}:${progress.periodStartDate}`;
           const alreadyNotified = notifications.some((n) => n.metadataJson === dedupeKey);
           if (!alreadyNotified) {
-            const label = category ? `${category.name} budget` : 'Monthly budget';
+            const periodLabel =
+              budget.period === 'biweekly'
+                ? 'Paycheck budget'
+                : budget.period === 'yearly'
+                  ? 'Annual budget'
+                  : 'Monthly budget';
+            const label = category ? `${category.name} budget` : periodLabel;
             await get().addNotification({
               type: 'budget_alert',
               title: `${label} exceeded`,
@@ -497,7 +515,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   },
 
   restoreBackup: async (payload, mode) => {
-    const result = await repositories.backup.restoreFromBackup(payload, mode);
+    const materialized = materializeBackupMediaAssets(payload);
+    const result = await repositories.backup.restoreFromBackup(materialized, mode);
     await repositories.notifications.create({
       type: 'backup',
       title: 'Backup restored',
@@ -512,6 +531,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       await repositories.backup.clearAllData();
+      clearAllStoredImages();
       let snapshot = await loadSnapshot();
       const detectedCurrency = detectDeviceCurrencyCode(snapshot.currencies);
       const updatedSettings = await repositories.settings.update({

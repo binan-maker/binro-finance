@@ -2,9 +2,6 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useMemo, useState } from 'react';
 import {
   FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -12,7 +9,7 @@ import {
   View,
 } from 'react-native';
 
-import { CategoryIcon } from '@/components/common';
+import { BottomSheetModal, CategoryIcon } from '@/components/common';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { Category, CategoryType } from '@/types/models';
@@ -101,32 +98,19 @@ export function CategoryPickerModal({
   }, [categories, type, selectedId, search]);
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.backdrop}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-        <Pressable style={styles.backdropDismiss} onPress={onClose} />
-        <View
-          style={[
-            styles.sheet,
-            { backgroundColor: theme.surface, borderColor: theme.border },
-          ]}>
-          <View style={styles.sheetHeader}>
-            <Text style={[styles.sheetTitle, { color: theme.text }]}>
-              Select Category
-            </Text>
-            <Pressable
-              onPress={onClose}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Close category selector">
-              <Ionicons name="chevron-down" size={22} color={theme.textSecondary} />
-            </Pressable>
-          </View>
+    <BottomSheetModal visible={visible} onClose={onClose} keyboardAvoiding>
+      <View style={styles.sheetHeader}>
+        <Text style={[styles.sheetTitle, { color: theme.text }]}>
+          Select Category
+        </Text>
+        <Pressable
+          onPress={onClose}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Close category selector">
+          <Ionicons name="chevron-down" size={22} color={theme.textSecondary} />
+        </Pressable>
+      </View>
 
           <View
             style={[
@@ -179,6 +163,7 @@ export function CategoryPickerModal({
                   <CategoryIcon
                     icon={item.category.icon}
                     color={item.category.color}
+                    imageUri={item.category.imageUri}
                     size={36}
                   />
                   <View style={styles.rowText}>
@@ -198,31 +183,11 @@ export function CategoryPickerModal({
               );
             }}
           />
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'flex-end',
-  },
-  backdropDismiss: {
-    flex: 1,
-  },
-  sheet: {
-    maxHeight: '78%',
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    borderTopWidth: 1,
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    padding: Spacing.three,
-    gap: Spacing.three - 2,
-  },
   sheetHeader: {
     flexDirection: 'row',
     alignItems: 'center',

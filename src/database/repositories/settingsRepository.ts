@@ -76,6 +76,10 @@ export class SQLiteSettingsRepository implements ISettingsRepository {
         : input.currencyCode !== undefined
           ? true
           : current.currencyInitialized;
+    const nextShowHomeBudgetShortcut =
+      input.showHomeBudgetShortcut !== undefined
+        ? input.showHomeBudgetShortcut
+        : current.showHomeBudgetShortcut;
 
     const db = await this.getDb();
     await db.runAsync(
@@ -89,7 +93,8 @@ export class SQLiteSettingsRepository implements ISettingsRepository {
            profile_name = ?,
            profile_bio = ?,
            profile_avatar = ?,
-           currency_initialized = ?
+           currency_initialized = ?,
+           show_home_budget_shortcut = ?
        WHERE id = 1`,
       nextCurrency,
       nextOpeningBalance,
@@ -107,6 +112,7 @@ export class SQLiteSettingsRepository implements ISettingsRepository {
       nextProfileBio,
       nextProfileAvatar,
       nextCurrencyInitialized ? 1 : 0,
+      nextShowHomeBudgetShortcut ? 1 : 0,
     );
 
     return this.get();

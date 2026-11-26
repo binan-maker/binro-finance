@@ -1,8 +1,11 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { type ComponentRef, useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
+  AnchoredActionMenu,
+  type AnchoredMenuAction,
+  type AnchorRect,
   AppButton,
   AppCard,
   AppHeader,
@@ -26,6 +29,8 @@ export default function NotificationsScreen() {
 
   const [selectedNotification, setSelectedNotification] =
     useState<AppNotification | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<AnchorRect | null>(null);
+  const triggerRefs = useRef<Map<string, ComponentRef<typeof View> | null>>(new Map());
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 
@@ -40,6 +45,45 @@ export default function NotificationsScreen() {
         return 'notifications-outline';
     }
   };
+
+  const openMenuForItem = (item: AppNotification) => {
+    const triggerView = triggerRefs.current.get(item.id);
+    if (triggerView) {
+      triggerView.measureInWindow((x, y, width, height) => {
+        setMenuAnchor({ x, y, width, height });
+        setSelectedNotification(item);
+      });
+    } else {
+      setMenuAnchor(null);
+      setSelectedNotification(item);
+    }
+  };
+
+  const menuActions: AnchoredMenuAction[] = selectedNotification
+    ? [
+        {
+          key: 'toggle-read',
+          label: selectedNotification.isRead ? 'Mark as unread' : 'Mark as read',
+          icon: selectedNotification.isRead
+            ? 'mail-unread-outline'
+            : 'checkmark-done-outline',
+          onPress: () => {
+            if (selectedNotification.isRead) {
+              void markNotificationUnread(selectedNotification.id);
+            } else {
+              void markNotificationRead(selectedNotification.id);
+            }
+          },
+        },
+        {
+          key: 'delete',
+          label: 'Delete',
+          icon: 'trash-outline',
+          destructive: true,
+          onPress: () => void deleteNotification(selectedNotification.id),
+        },
+      ]
+    : [];
 
   return (
     <AppScreen edges={['top', 'bottom', 'left', 'right']}>
@@ -115,24 +159,31 @@ export default function NotificationsScreen() {
                           {item.title}
                         </Text>
                       </View>
-                      <Pressable
-                        onPress={(e) => {
-                          e.stopPropagation();
-                          setSelectedNotification(item);
+                      <View
+                        ref={(el) => {
+                          if (el) triggerRefs.current.set(item.id, el);
+                          else triggerRefs.current.delete(item.id);
                         }}
-                        hitSlop={10}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Actions for ${item.title}`}
-                        style={({ pressed }) => [
-                          styles.menuTrigger,
-                          pressed && styles.pressed,
-                        ]}>
-                        <Ionicons
-                          name="ellipsis-vertical"
-                          size={18}
-                          color={theme.textSecondary}
-                        />
-                      </Pressable>
+                        collapsable={false}>
+                        <Pressable
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            openMenuForItem(item);
+                          }}
+                          hitSlop={10}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Actions for ${item.title}`}
+                          style={({ pressed }) => [
+                            styles.menuTrigger,
+                            pressed && styles.pressed,
+                          ]}>
+                          <Ionicons
+                            name="ellipsis-vertical"
+                            size={18}
+                            color={theme.textSecondary}
+                          />
+                        </Pressable>
+                      </View>
                     </View>
                     <Text style={[styles.body, { color: theme.textSecondary }]}>
                       {item.body}
@@ -148,55 +199,12 @@ export default function NotificationsScreen() {
         </View>
       )}
 
-      <Modal
+      <AnchoredActionMenu
         visible={Boolean(selectedNotification)}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSelectedNotification(null)}>
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setSelectedNotification(null)}>
-          {selectedNotification ? (
-            <View
-              style={[
-                styles.menuCard,
-                { backgroundColor: theme.surface, borderColor: theme.border },
-              ]}>
-              <Pressable
-                onPress={() => {
-                  const target = selectedNotification;
-                  setSelectedNotification(null);
-                  if (target.isRead) {
-                    void markNotificationUnread(target.id);
-                  } else {
-                    void markNotificationRead(target.id);
-                  }
-                }}
-                accessibilityRole="button"
-                style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}>
-                <Text style={[styles.menuItemText, { color: theme.text }]}>
-                  {selectedNotification.isRead ? 'Mark as unread' : 'Mark as read'}
-                </Text>
-              </Pressable>
-
-              <View style={[styles.divider, { backgroundColor: theme.border }]} />
-
-              <Pressable
-                onPress={() => {
-                  const targetId = selectedNotification.id;
-                  setSelectedNotification(null);
-                  void deleteNotification(targetId);
-                }}
-                accessibilityRole="button"
-                style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}>
-                <Text style={[styles.menuItemText, { color: theme.danger }]}>
-                  Delete
-                </Text>
-              </Pressable>
-            </View>
-          ) : null}
-        </Pressable>
-      </Modal>
+        anchor={menuAnchor}
+        actions={menuActions}
+        onClose={() => setSelectedNotification(null)}
+      />
     </AppScreen>
   );
 }
@@ -254,32 +262,6 @@ const styles = StyleSheet.create({
   time: {
     fontSize: 11,
     marginTop: 2,
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.five,
-  },
-  menuCard: {
-    width: '100%',
-    maxWidth: 280,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  menuItem: {
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.three,
-  },
-  menuItemText: {
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  divider: {
-    height: 1,
-    width: '100%',
   },
   pressed: {
     opacity: 0.72,

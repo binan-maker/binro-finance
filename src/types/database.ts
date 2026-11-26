@@ -39,6 +39,7 @@ export interface CategoryRow {
   parent_id: string | null;
   icon: string | null;
   color: string | null;
+  image_uri?: string | null;
   is_default: number | null;
   is_archived: number | null;
   created_at: string;
@@ -84,6 +85,7 @@ export interface BudgetRow {
   period: BudgetPeriod;
   month: number;
   year: number;
+  start_date?: string | null;
   category_id: string | null;
   created_at: string;
   updated_at: string;
@@ -101,6 +103,7 @@ export interface AppSettingsRow {
   profile_bio?: string | null;
   profile_avatar?: string | null;
   currency_initialized?: number | null;
+  show_home_budget_shortcut?: number | null;
 }
 
 export interface NotificationRow {
@@ -164,6 +167,7 @@ export interface CreateCategoryInput {
   parentId?: string | null;
   icon: string;
   color: string;
+  imageUri?: string | null;
   isDefault?: boolean;
 }
 
@@ -172,6 +176,7 @@ export interface UpdateCategoryInput {
   parentId?: string | null;
   icon?: string;
   color?: string;
+  imageUri?: string | null;
   isArchived?: boolean;
 }
 
@@ -207,6 +212,7 @@ export interface UpsertBudgetInput {
   period?: BudgetPeriod;
   month: number;
   year: number;
+  startDate?: string | null;
   categoryId: string | null;
 }
 
@@ -221,6 +227,7 @@ export interface UpdateSettingsInput {
   profileBio?: string | null;
   profileAvatar?: string | null;
   currencyInitialized?: boolean;
+  showHomeBudgetShortcut?: boolean;
 }
 
 export interface CreateNotificationInput {
@@ -229,6 +236,11 @@ export interface CreateNotificationInput {
   title: string;
   body: string;
   metadataJson?: string | null;
+}
+
+export interface BackupMediaAsset {
+  mimeType: string;
+  base64: string;
 }
 
 export interface BackupPayload {
@@ -242,6 +254,7 @@ export interface BackupPayload {
   budgets: Budget[];
   transactions: Transaction[];
   notifications?: AppNotification[];
+  mediaAssets?: Record<string, BackupMediaAsset>;
 }
 
 export interface RestoreResult {

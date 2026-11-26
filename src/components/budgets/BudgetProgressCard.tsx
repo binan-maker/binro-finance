@@ -1,17 +1,26 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { type ComponentRef, useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { AppCard } from '@/components/common';
+import {
+  AnchoredActionMenu,
+  AppCard,
+  CategoryIcon,
+  type AnchorRect,
+  type AnchoredMenuAction,
+} from '@/components/common';
 import type { CurrencyConfig } from '@/constants/currencies';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import type { DateFormatPreference } from '@/types/models';
 import type { BudgetProgress } from '@/types/reports';
+import { formatDateForDisplay } from '@/utils/date';
 import { formatMoney } from '@/utils/money';
 
 interface BudgetProgressCardProps {
   progress: BudgetProgress;
   currencyCode: string;
+  dateFormat?: DateFormatPreference;
   currencies?: readonly CurrencyConfig[];
   onEdit?: () => void;
   onDelete?: () => void;
@@ -20,47 +29,120 @@ interface BudgetProgressCardProps {
 export function BudgetProgressCard({
   progress,
   currencyCode,
+  dateFormat = 'DD MMM YYYY',
   currencies,
   onEdit,
   onDelete,
 }: BudgetProgressCardProps) {
   const theme = useTheme();
+  const triggerRef = useRef<ComponentRef<typeof View>>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<AnchorRect | null>(null);
 
-  const title = progress.categoryName ?? 'Monthly Overall Budget';
+  const defaultOverallTitle =
+    progress.budget.period === 'biweekly'
+      ? 'Paycheck Overall Budget'
+      : progress.budget.period === 'yearly'
+        ? 'Annual Target Budget'
+        : 'Monthly Overall Budget';
+
+  const title = progress.categoryName ?? defaultOverallTitle;
   const clampedRatio = Math.min(Math.max(progress.percentageUsed / 100, 0), 1);
 
-  const barColor = progress.isExceeded
-    ? theme.danger
-    : progress.percentageUsed >= 85
-      ? theme.warning
-      : progress.categoryColor || theme.primary;
+  const barColor =
+    progress.status === 'exceeded'
+      ? theme.danger
+      : progress.status === 'warning'
+        ? theme.warning
+        : progress.categoryColor || theme.primary;
 
-  const hasActions = Boolean(onEdit || onDelete);
+  const statusConfig =
+    progress.status === 'exceeded'
+      ? { label: 'Over Budget', bg: theme.dangerSoft, fg: theme.danger }
+      : progress.status === 'warning'
+        ? { label: 'Near Limit', bg: theme.warningSoft, fg: theme.warning }
+        : { label: 'On Track', bg: theme.incomeSoft, fg: theme.income };
+
+  const menuActions: AnchoredMenuAction[] = [];
+  if (onEdit) {
+    menuActions.push({
+      key: 'edit',
+      label: 'Edit',
+      icon: 'create-outline',
+      onPress: onEdit,
+    });
+  }
+  if (onDelete) {
+    menuActions.push({
+      key: 'delete',
+      label: 'Delete',
+      icon: 'trash-outline',
+      destructive: true,
+      onPress: onDelete,
+    });
+  }
+
+  const openAnchoredMenu = () => {
+    if (triggerRef.current) {
+      triggerRef.current.measureInWindow((x, y, width, height) => {
+        setMenuAnchor({ x, y, width, height });
+        setMenuOpen(true);
+      });
+    } else {
+      setMenuAnchor(null);
+      setMenuOpen(true);
+    }
+  };
+
+  let periodHint: string | null = null;
+  if (progress.budget.period === 'biweekly') {
+    const startLabel = formatDateForDisplay(progress.periodStartDate, dateFormat);
+    const endLabel = formatDateForDisplay(progress.periodEndDate, dateFormat);
+    const nextLabel = progress.nextPeriodStartDate
+      ? formatDateForDisplay(progress.nextPeriodStartDate, dateFormat)
+      : null;
+    periodHint = nextLabel
+      ? `${startLabel} – ${endLabel} · Next: ${nextLabel}`
+      : `${startLabel} – ${endLabel}`;
+  } else if (progress.budget.period === 'yearly' && progress.monthlyContributionMinor !== null) {
+    periodHint = `Set aside ${formatMoney(progress.monthlyContributionMinor, currencyCode, { catalog: currencies })}/mo`;
+  }
 
   return (
     <AppCard>
       <View style={styles.headerRow}>
         <View style={styles.titleRow}>
-          {progress.categoryColor ? (
-            <View
-              style={[styles.dot, { backgroundColor: progress.categoryColor }]}
+          {progress.budget.categoryId ? (
+            <CategoryIcon
+              icon={progress.categoryIcon}
+              color={progress.categoryColor}
+              imageUri={progress.categoryImageUri}
+              size={30}
             />
           ) : null}
-          <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>
-            {title}
-          </Text>
+          <View style={styles.titleCol}>
+            <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>
+              {title}
+            </Text>
+            {periodHint ? (
+              <Text style={[styles.periodHint, { color: theme.textSecondary }]} numberOfLines={1}>
+                {periodHint}
+              </Text>
+            ) : null}
+          </View>
         </View>
 
-        {hasActions ? (
-          <Pressable
-            onPress={() => setMenuOpen(true)}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel={`Actions for ${title}`}
-            style={styles.menuBtn}>
-            <Ionicons name="ellipsis-horizontal" size={18} color={theme.textSecondary} />
-          </Pressable>
+        {menuActions.length > 0 ? (
+          <View ref={triggerRef} collapsable={false}>
+            <Pressable
+              onPress={openAnchoredMenu}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel={`Actions for ${title}`}
+              style={({ pressed }) => [styles.menuBtn, pressed && styles.pressed]}>
+              <Ionicons name="ellipsis-vertical" size={18} color={theme.textSecondary} />
+            </Pressable>
+          </View>
         ) : null}
       </View>
 
@@ -102,62 +184,19 @@ export function BudgetProgressCard({
             ? `Exceeded by ${formatMoney(Math.abs(progress.remainingMinor), currencyCode, { catalog: currencies })}`
             : `${formatMoney(progress.remainingMinor, currencyCode, { catalog: currencies })} remaining`}
         </Text>
-        {progress.isExceeded ? (
-          <View style={[styles.warnBadge, { backgroundColor: theme.dangerSoft }]}>
-            <Text style={[styles.warnBadgeText, { color: theme.danger }]}>
-              Over Budget
-            </Text>
-          </View>
-        ) : null}
+        <View style={[styles.statusBadge, { backgroundColor: statusConfig.bg }]}>
+          <Text style={[styles.statusBadgeText, { color: statusConfig.fg }]}>
+            {statusConfig.label}
+          </Text>
+        </View>
       </View>
 
-      {hasActions ? (
-        <Modal
-          visible={menuOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setMenuOpen(false)}>
-          <Pressable
-            style={styles.menuBackdrop}
-            onPress={() => setMenuOpen(false)}>
-            <View
-              style={[
-                styles.menuCard,
-                { backgroundColor: theme.surface, borderColor: theme.border },
-              ]}>
-              {onEdit ? (
-                <Pressable
-                  onPress={() => {
-                    setMenuOpen(false);
-                    onEdit();
-                  }}
-                  accessibilityRole="button"
-                  style={styles.menuItem}>
-                  <Text style={[styles.menuItemText, { color: theme.text }]}>
-                    Edit
-                  </Text>
-                </Pressable>
-              ) : null}
-              {onEdit && onDelete ? (
-                <View style={[styles.menuDivider, { backgroundColor: theme.border }]} />
-              ) : null}
-              {onDelete ? (
-                <Pressable
-                  onPress={() => {
-                    setMenuOpen(false);
-                    onDelete();
-                  }}
-                  accessibilityRole="button"
-                  style={styles.menuItem}>
-                  <Text style={[styles.menuItemText, { color: theme.danger }]}>
-                    Delete
-                  </Text>
-                </Pressable>
-              ) : null}
-            </View>
-          </Pressable>
-        </Modal>
-      ) : null}
+      <AnchoredActionMenu
+        visible={menuOpen}
+        anchor={menuAnchor}
+        actions={menuActions}
+        onClose={() => setMenuOpen(false)}
+      />
     </AppCard>
   );
 }
@@ -175,18 +214,24 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
     flex: 1,
   },
-  dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+  titleCol: {
+    flex: 1,
+    gap: 1,
   },
   title: {
     fontSize: 15,
     fontWeight: '700',
-    flex: 1,
+  },
+  periodHint: {
+    fontSize: 12,
+    fontWeight: '500',
   },
   menuBtn: {
     padding: 4,
+    borderRadius: Radius.full,
+  },
+  pressed: {
+    opacity: 0.68,
   },
   amountsRow: {
     flexDirection: 'row',
@@ -218,43 +263,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.two,
   },
   remainingText: {
     fontSize: 12,
     fontWeight: '500',
+    flex: 1,
   },
-  warnBadge: {
+  statusBadge: {
     paddingHorizontal: Spacing.two,
-    paddingVertical: 2,
+    paddingVertical: 3,
     borderRadius: Radius.sm,
   },
-  warnBadgeText: {
+  statusBadgeText: {
     fontSize: 11,
     fontWeight: '700',
-  },
-  menuBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing.four,
-  },
-  menuCard: {
-    width: '100%',
-    maxWidth: 280,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  menuItem: {
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.three,
-  },
-  menuItemText: {
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  menuDivider: {
-    height: 1,
   },
 });

@@ -7,9 +7,10 @@ import {
   DEFAULT_PAYMENT_METHODS,
 } from '@/constants/categories';
 import type { SqlBindValue, SqlDatabaseAdapter } from '@/database/driver';
-import { runMigrations } from '@/database/migrations';
+import { MIGRATIONS, runMigrations } from '@/database/migrations';
 import { createRepositories } from '@/database/repositories/factory';
 import {
+  calculateBudgetOverviewStats,
   calculateBudgetProgress,
   calculatePeriodSummary,
   summarizeByCurrency,
@@ -62,14 +63,15 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     repos = createRepositories(async () => db);
   });
 
-  test('runs V3 migrations idempotently and seeds V2/V3 categories, payment methods, and settings', async () => {
+  test('runs V4 migrations idempotently and seeds V2/V3/V4 categories, payment methods, and settings', async () => {
     const version = await runMigrations(db);
-    expect(version).toBe(3);
+    expect(version).toBe(4);
 
     const categories = await repos.categories.getAll({ includeArchived: true });
     const expectedCount =
       DEFAULT_EXPENSE_CATEGORIES.length + DEFAULT_INCOME_CATEGORIES.length;
     expect(categories.length).toBe(expectedCount);
+    expect(categories.every((c) => c.imageUri === null)).toBe(true);
 
     const paymentMethods = await repos.paymentMethods.getAll({ includeArchived: true });
     expect(paymentMethods.length).toBe(DEFAULT_PAYMENT_METHODS.length);
@@ -81,6 +83,7 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     expect(settings.theme).toBe('system');
     expect(settings.onboardingCompleted).toBe(false);
     expect(settings.currencyInitialized).toBe(false);
+    expect(settings.showHomeBudgetShortcut).toBe(false);
   });
 
   test('safely upgrades a simulated V1 database to V2 without data loss', async () => {
@@ -164,19 +167,21 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     );
 
     const upgradedVersion = await runMigrations(v1Db);
-    expect(upgradedVersion).toBe(3);
+    expect(upgradedVersion).toBe(4);
 
     const upgradedRepos = createRepositories(async () => v1Db);
     const settings = await upgradedRepos.settings.get();
     expect(settings.currencyCode).toBe('USD');
     expect(settings.openingBalanceCurrencyCode).toBe('USD');
     expect(settings.openingBalanceMinor).toBe(25000);
+    expect(settings.showHomeBudgetShortcut).toBe(false);
 
     const cats = await upgradedRepos.categories.getAll();
     expect(cats.find((c) => c.id === 'cat-exp-food')?.name).toBe('Food & Drink');
     expect(cats.find((c) => c.id === 'cat-exp-bills')?.name).toBe('Utilities');
     expect(cats.some((c) => c.id === 'cat-exp-travel')).toBe(true);
     expect(cats.some((c) => c.id === 'cat-inc-business')).toBe(true);
+    expect(cats.every((c) => c.imageUri === null)).toBe(true);
 
     const tx1 = await upgradedRepos.transactions.getById('v1-tx-1');
     expect(tx1?.currencyCode).toBe('USD');
@@ -191,6 +196,8 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     const budgets = await upgradedRepos.budgets.getAll();
     expect(budgets.length).toBe(1);
     expect(budgets[0].currencyCode).toBe('USD');
+    expect(budgets[0].period).toBe('monthly');
+    expect(budgets[0].startDate).toBeNull();
   });
 
   test('changing default currency preserves historical transaction currencies & opening balance currency', async () => {
@@ -449,7 +456,7 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     expect(notifs.map((n) => n.id)).toEqual([n2.id]);
 
     const exported = await repos.backup.exportAll('2.0.0');
-    expect(exported.schemaVersion).toBe(2);
+    expect(exported.schemaVersion).toBe(4);
     expect(exported.transactions.length).toBe(1);
     expect(exported.transactions[0].tagIds).toEqual([tag.id]);
 
@@ -495,6 +502,7 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
         profileBio: null,
         profileAvatar: null,
         currencyInitialized: false,
+        showHomeBudgetShortcut: false,
       },
       categories: [],
       tags: [],
@@ -525,5 +533,225 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
 
     const summary = summarizeTransactions([originalTx], 0, 'INR', 'INR');
     expect(summary.totalIncomeMinor).toBe(400000);
+  });
+
+  test('upgrades a simulated V3 database to V4 preserving monthly budgets, categories, and data', async () => {
+    const v3Db = createBunSqliteAdapter();
+    await v3Db.execAsync('PRAGMA foreign_keys = ON;');
+    for (const m of MIGRATIONS.filter((item) => item.version <= 3)) {
+      await m.up(v3Db);
+      await v3Db.execAsync(`PRAGMA user_version = ${m.version};`);
+    }
+
+    const now = '2026-11-01T10:00:00.000Z';
+    await v3Db.runAsync(
+      "INSERT OR REPLACE INTO app_settings (id, currency_code, opening_balance_minor, opening_balance_currency_code, theme, date_format, onboarding_completed, profile_name, profile_bio, profile_avatar, currency_initialized) VALUES (1, 'INR', 5000, 'INR', 'light', 'DD MMM YYYY', 1, 'Asha', 'Saver', NULL, 1)",
+    );
+    await v3Db.runAsync(
+      "INSERT INTO categories (id, name, type, parent_id, icon, color, is_default, is_archived, created_at, updated_at) VALUES ('cat-v3-food', 'Groceries', 'expense', NULL, 'shopping-bag', '#10B981', 0, 0, ?, ?)",
+      now,
+      now,
+    );
+    await v3Db.runAsync(
+      "INSERT INTO budgets (id, amount_minor, currency_code, period, month, year, category_id, created_at, updated_at) VALUES ('b-v3-1', 120000, 'INR', 'monthly', 11, 2026, 'cat-v3-food', ?, ?)",
+      now,
+      now,
+    );
+    await v3Db.runAsync(
+      "INSERT INTO transactions (id, type, title, amount_minor, currency_code, category_id, category_name_snapshot, payment_method_id, payment_method, transaction_date, note, created_at, updated_at) VALUES ('tx-v3-1', 'expense', 'Market', 25000, 'INR', 'cat-v3-food', 'Groceries', NULL, 'UPI', '2026-11-10', NULL, ?, ?)",
+      now,
+      now,
+    );
+
+    const version = await runMigrations(v3Db);
+    expect(version).toBe(4);
+
+    const upgradedRepos = createRepositories(async () => v3Db);
+    const settings = await upgradedRepos.settings.get();
+    expect(settings.profileName).toBe('Asha');
+    expect(settings.showHomeBudgetShortcut).toBe(false);
+
+    const cat = await upgradedRepos.categories.getById('cat-v3-food');
+    expect(cat?.name).toBe('Groceries');
+    expect(cat?.imageUri).toBeNull();
+
+    const budgets = await upgradedRepos.budgets.getAll();
+    expect(budgets.length).toBe(1);
+    expect(budgets[0].period).toBe('monthly');
+    expect(budgets[0].startDate).toBeNull();
+    expect(budgets[0].amountMinor).toBe(120000);
+  });
+
+  test('supports biweekly paycheck budgets, yearly sinking funds, overview stats, and category images without double-counting', async () => {
+    const customCat = await repos.categories.create({
+      name: 'Travel Gear',
+      type: 'expense',
+      icon: 'briefcase',
+      color: '#0891B2',
+      imageUri: 'file:///docs/binro_images/categories/cat-gear.jpg',
+    });
+    expect(customCat.imageUri).toBe('file:///docs/binro_images/categories/cat-gear.jpg');
+
+    // Biweekly budget anchored 2026-11-25 -> window 2026-11-25..2026-12-08 (crosses month boundary!)
+    const biweekly = await repos.budgets.upsert({
+      amountMinor: 100000,
+      currencyCode: 'INR',
+      period: 'biweekly',
+      month: 11,
+      year: 2026,
+      startDate: '2026-11-25',
+      categoryId: null,
+    });
+    expect(biweekly.period).toBe('biweekly');
+    expect(biweekly.startDate).toBe('2026-11-25');
+
+    // Editing anchor startDate in place using id updates the existing record rather than duplicating
+    const updatedBiweekly = await repos.budgets.upsert({
+      id: biweekly.id,
+      amountMinor: 120000,
+      currencyCode: 'INR',
+      period: 'biweekly',
+      month: 11,
+      year: 2026,
+      startDate: '2026-11-24',
+      categoryId: null,
+    });
+    expect(updatedBiweekly.id).toBe(biweekly.id);
+    expect(updatedBiweekly.startDate).toBe('2026-11-24');
+    expect(updatedBiweekly.amountMinor).toBe(120000);
+
+    // Yearly sinking fund: INR 2,400.00 -> monthly set-aside 200.00
+    const yearly = await repos.budgets.upsert({
+      amountMinor: 240000,
+      currencyCode: 'INR',
+      period: 'yearly',
+      month: 1,
+      year: 2026,
+      categoryId: customCat.id,
+    });
+
+    await repos.transactions.create({
+      type: 'expense',
+      title: 'Backpack',
+      amountMinor: 50000,
+      currencyCode: 'INR',
+      categoryId: customCat.id,
+      categoryNameSnapshot: customCat.name,
+      paymentMethod: 'Card',
+      transactionDate: '2026-11-28',
+    });
+    await repos.transactions.create({
+      type: 'expense',
+      title: 'December Grocery',
+      amountMinor: 40000,
+      currencyCode: 'INR',
+      categoryId: 'cat-exp-food',
+      categoryNameSnapshot: 'Food & Drink',
+      paymentMethod: 'UPI',
+      transactionDate: '2026-12-03',
+    });
+    await repos.transactions.create({
+      type: 'expense',
+      title: 'USD Expense',
+      amountMinor: 9999,
+      currencyCode: 'USD',
+      categoryId: customCat.id,
+      categoryNameSnapshot: customCat.name,
+      paymentMethod: 'Card',
+      transactionDate: '2026-12-01',
+    });
+
+    const txs = await repos.transactions.getAll();
+    const cats = await repos.categories.getAll();
+
+    // Biweekly cycle (2026-11-24 .. 2026-12-07) includes Nov 28 + Dec 03 INR expenses = 90000
+    const biweeklyProgress = calculateBudgetProgress({
+      budget: updatedBiweekly,
+      transactions: txs,
+      category: null,
+      referenceDate: '2026-12-01',
+    });
+    expect(biweeklyProgress.periodStartDate).toBe('2026-11-24');
+    expect(biweeklyProgress.periodEndDate).toBe('2026-12-07');
+    expect(biweeklyProgress.nextPeriodStartDate).toBe('2026-12-08');
+    expect(biweeklyProgress.nextPeriodEndDate).toBe('2026-12-21');
+    expect(biweeklyProgress.spentMinor).toBe(90000);
+    expect(biweeklyProgress.remainingMinor).toBe(30000);
+
+    // Calendar-month report for November still only counts November INR expenses (50000), never double-counted
+    const novSummary = calculatePeriodSummary({
+      transactions: txs,
+      categories: cats,
+      currencyCode: 'INR',
+      startDate: '2026-11-01',
+      endDate: '2026-11-30',
+    });
+    expect(novSummary.totalExpensesMinor).toBe(50000);
+
+    // Yearly sinking fund calculates monthly contribution without fabricating transactions
+    const yearlyProgress = calculateBudgetProgress({
+      budget: yearly,
+      transactions: txs,
+      category: customCat,
+    });
+    expect(yearlyProgress.monthlyContributionMinor).toBe(20000);
+    expect(yearlyProgress.spentMinor).toBe(50000);
+    expect(yearlyProgress.remainingMinor).toBe(190000);
+    expect(yearlyProgress.categoryImageUri).toBe(
+      'file:///docs/binro_images/categories/cat-gear.jpg',
+    );
+
+    const overview = calculateBudgetOverviewStats({
+      period: 'biweekly',
+      periodStartDate: biweeklyProgress.periodStartDate,
+      periodEndDate: biweeklyProgress.periodEndDate,
+      currencyCode: 'INR',
+      transactions: txs,
+      categories: cats,
+      overallProgress: biweeklyProgress,
+      categoryProgressList: [],
+    });
+    expect(overview.totalBudgetMinor).toBe(120000);
+    expect(overview.totalSpentMinor).toBe(90000);
+    expect(overview.remainingMinor).toBe(30000);
+    expect(overview.status).toBe('healthy');
+    expect(overview.hasExpenseData).toBe(true);
+
+    // Empty state for USD biweekly overview has no fabricated numbers
+    const emptyOverview = calculateBudgetOverviewStats({
+      period: 'yearly',
+      periodStartDate: '2025-01-01',
+      periodEndDate: '2025-12-31',
+      currencyCode: 'EUR',
+      transactions: txs,
+      categories: cats,
+      overallProgress: null,
+      categoryProgressList: [],
+    });
+    expect(emptyOverview.hasAnyBudget).toBe(false);
+    expect(emptyOverview.hasExpenseData).toBe(false);
+    expect(emptyOverview.totalBudgetMinor).toBe(0);
+    expect(emptyOverview.totalSpentMinor).toBe(0);
+
+    // Settings shortcut flag & backup/restore preserve V4 fields cleanly
+    await repos.settings.update({ showHomeBudgetShortcut: true });
+    const exported = await repos.backup.exportAll('4.0.0');
+    expect(exported.schemaVersion).toBe(4);
+    expect(exported.settings.showHomeBudgetShortcut).toBe(true);
+    expect(exported.budgets.some((b) => b.period === 'biweekly' && b.startDate === '2026-11-24')).toBe(
+      true,
+    );
+    expect(
+      exported.categories.find((c) => c.id === customCat.id)?.imageUri,
+    ).toBe('file:///docs/binro_images/categories/cat-gear.jpg');
+
+    await repos.backup.clearAllData();
+    await repos.backup.restoreFromBackup(exported, 'replace');
+    const restoredSettings = await repos.settings.get();
+    expect(restoredSettings.showHomeBudgetShortcut).toBe(true);
+    const restoredCat = await repos.categories.getById(customCat.id);
+    expect(restoredCat?.imageUri).toBe('file:///docs/binro_images/categories/cat-gear.jpg');
+    const restoredBudgets = await repos.budgets.getAll();
+    expect(restoredBudgets.find((b) => b.period === 'biweekly')?.startDate).toBe('2026-11-24');
   });
 });

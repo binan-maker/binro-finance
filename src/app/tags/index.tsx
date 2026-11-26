@@ -2,9 +2,6 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -18,6 +15,7 @@ import {
   AppHeader,
   AppInput,
   AppScreen,
+  BottomSheetModal,
   EmptyState,
 } from '@/components/common';
 import { TAG_COLOR_OPTIONS } from '@/constants/categories';
@@ -236,80 +234,65 @@ export default function TagsScreen() {
         </View>
       )}
 
-      <Modal
+      <BottomSheetModal
         visible={editorVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setEditorVisible(false)}>
-        <KeyboardAvoidingView
-          style={styles.backdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          <Pressable
-            style={styles.backdropDismiss}
-            onPress={() => setEditorVisible(false)}
-          />
-          <View
-            style={[
-              styles.sheet,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>New Tag</Text>
+        onClose={() => setEditorVisible(false)}
+        keyboardAvoiding>
+        <Text style={[styles.modalTitle, { color: theme.text }]}>New Tag</Text>
 
-            <AppInput
-              label="Tag Name"
-              value={nameInput}
-              onChangeText={(t) => {
-                setNameInput(t);
-                if (editorError) setEditorError(null);
-              }}
-              placeholder="e.g. Vacation, Reimbursable"
-              maxLength={28}
-              error={editorError}
+        <AppInput
+          label="Tag Name"
+          value={nameInput}
+          onChangeText={(t) => {
+            setNameInput(t);
+            if (editorError) setEditorError(null);
+          }}
+          placeholder="e.g. Vacation, Reimbursable"
+          maxLength={28}
+          error={editorError}
+        />
+
+        <Text style={[styles.label, { color: theme.text }]}>Color</Text>
+        <View style={styles.colors}>
+          {TAG_COLOR_OPTIONS.map((c) => {
+            const selected = colorInput === c;
+            return (
+              <Pressable
+                key={c}
+                onPress={() => setColorInput(c)}
+                style={[
+                  styles.colorSwatch,
+                  {
+                    backgroundColor: c,
+                    borderWidth: selected ? 3 : 0,
+                    borderColor: theme.text,
+                  },
+                ]}
+              />
+            );
+          })}
+        </View>
+
+        <View style={styles.modalActions}>
+          <View style={styles.flex1}>
+            <AppButton
+              label="Cancel"
+              variant="outline"
+              onPress={() => setEditorVisible(false)}
+              disabled={saving}
+              fullWidth
             />
-
-            <Text style={[styles.label, { color: theme.text }]}>Color</Text>
-            <View style={styles.colors}>
-              {TAG_COLOR_OPTIONS.map((c) => {
-                const selected = colorInput === c;
-                return (
-                  <Pressable
-                    key={c}
-                    onPress={() => setColorInput(c)}
-                    style={[
-                      styles.colorSwatch,
-                      {
-                        backgroundColor: c,
-                        borderWidth: selected ? 3 : 0,
-                        borderColor: theme.text,
-                      },
-                    ]}
-                  />
-                );
-              })}
-            </View>
-
-            <View style={styles.modalActions}>
-              <View style={styles.flex1}>
-                <AppButton
-                  label="Cancel"
-                  variant="outline"
-                  onPress={() => setEditorVisible(false)}
-                  disabled={saving}
-                  fullWidth
-                />
-              </View>
-              <View style={styles.flex1}>
-                <AppButton
-                  label="Save"
-                  onPress={() => void handleSave()}
-                  loading={saving}
-                  fullWidth
-                />
-              </View>
-            </View>
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
+          <View style={styles.flex1}>
+            <AppButton
+              label="Save"
+              onPress={() => void handleSave()}
+              loading={saving}
+              fullWidth
+            />
+          </View>
+        </View>
+      </BottomSheetModal>
     </AppScreen>
   );
 }
@@ -392,21 +375,6 @@ const styles = StyleSheet.create({
   },
   count: {
     fontSize: 12,
-  },
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'flex-end',
-  },
-  backdropDismiss: {
-    flex: 1,
-  },
-  sheet: {
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    borderWidth: 1,
-    padding: Spacing.four,
-    gap: Spacing.three,
   },
   modalTitle: {
     fontSize: 18,

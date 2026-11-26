@@ -146,7 +146,8 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
     !Number.isInteger(candidate.schemaVersion) ||
     (candidate.schemaVersion !== 1 &&
       candidate.schemaVersion !== 2 &&
-      candidate.schemaVersion !== 3)
+      candidate.schemaVersion !== 3 &&
+      candidate.schemaVersion !== 4)
   ) {
     return { valid: false, error: 'Unsupported or missing backup schema version.' };
   }
@@ -208,6 +209,7 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
       (rec.parentId !== undefined && rec.parentId !== null && !isNonEmptyString(rec.parentId)) ||
       typeof rec.icon !== 'string' ||
       typeof rec.color !== 'string' ||
+      (rec.imageUri !== undefined && rec.imageUri !== null && typeof rec.imageUri !== 'string') ||
       typeof rec.isDefault !== 'boolean' ||
       typeof rec.isArchived !== 'boolean' ||
       !isNonEmptyString(rec.createdAt) ||
@@ -295,6 +297,12 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
         : typeof rec.currencyCode === 'string'
           ? rec.currencyCode.trim().toUpperCase()
           : '';
+    const validPeriod =
+      rec.period === 'monthly' || rec.period === 'biweekly' || rec.period === 'yearly';
+    const validStartDate =
+      rec.startDate === undefined ||
+      rec.startDate === null ||
+      (typeof rec.startDate === 'string' && isValidISODate(rec.startDate));
     if (
       !b ||
       typeof b !== 'object' ||
@@ -303,7 +311,9 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
       !Number.isSafeInteger(rec.amountMinor) ||
       rec.amountMinor <= 0 ||
       !isValidIsoCurrencyCode(budgetCurrency) ||
-      rec.period !== 'monthly' ||
+      !validPeriod ||
+      (rec.period === 'biweekly' && (!rec.startDate || typeof rec.startDate !== 'string' || !isValidISODate(rec.startDate))) ||
+      !validStartDate ||
       typeof rec.month !== 'number' ||
       !Number.isInteger(rec.month) ||
       rec.month < 1 ||
@@ -316,6 +326,24 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
       !isNonEmptyString(rec.updatedAt)
     ) {
       return { valid: false, error: 'Backup contains an invalid budget record.' };
+    }
+  }
+
+  if (candidate.mediaAssets !== undefined) {
+    if (!candidate.mediaAssets || typeof candidate.mediaAssets !== 'object' || Array.isArray(candidate.mediaAssets)) {
+      return { valid: false, error: 'Backup mediaAssets must be an object map.' };
+    }
+    for (const [assetKey, assetVal] of Object.entries(candidate.mediaAssets as Record<string, unknown>)) {
+      const assetRec = assetVal as Record<string, unknown>;
+      if (
+        !isNonEmptyString(assetKey) ||
+        !assetVal ||
+        typeof assetVal !== 'object' ||
+        typeof assetRec.mimeType !== 'string' ||
+        typeof assetRec.base64 !== 'string'
+      ) {
+        return { valid: false, error: 'Backup contains an invalid media asset.' };
+      }
     }
   }
 

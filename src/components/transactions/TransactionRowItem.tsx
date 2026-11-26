@@ -38,7 +38,12 @@ export function TransactionRowItem({
         { backgroundColor: theme.surface, borderColor: theme.border },
         pressed && styles.pressed,
       ]}>
-      <CategoryIcon icon={category?.icon} color={category?.color} size={42} />
+      <CategoryIcon
+        icon={category?.icon}
+        color={category?.color}
+        imageUri={category?.imageUri}
+        size={42}
+      />
 
       <View style={styles.center}>
         <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>

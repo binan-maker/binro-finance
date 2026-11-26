@@ -89,6 +89,7 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
           parentId,
           icon: input.icon,
           color: input.color,
+          imageUri: input.imageUri ?? null,
           isArchived: false,
         });
       }
@@ -100,14 +101,15 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
 
     await db.runAsync(
       `INSERT INTO categories (
-        id, name, type, parent_id, icon, color, is_default, is_archived, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        id, name, type, parent_id, icon, color, image_uri, is_default, is_archived, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       id,
       trimmedName,
       input.type,
       parentId,
       input.icon,
       input.color,
+      input.imageUri ?? null,
       input.isDefault ? 1 : 0,
       now,
       now,
@@ -149,16 +151,22 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
       }
     }
 
+    const nextImageUri =
+      input.imageUri !== undefined
+        ? input.imageUri?.trim() || null
+        : existing.imageUri;
+
     const now = new Date().toISOString();
 
     await db.runAsync(
       `UPDATE categories
-       SET name = ?, parent_id = ?, icon = ?, color = ?, is_archived = ?, updated_at = ?
+       SET name = ?, parent_id = ?, icon = ?, color = ?, image_uri = ?, is_archived = ?, updated_at = ?
        WHERE id = ?`,
       nextName,
       nextParentId,
       input.icon ?? existing.icon,
       input.color ?? existing.color,
+      nextImageUri,
       input.isArchived !== undefined ? (input.isArchived ? 1 : 0) : existing.isArchived ? 1 : 0,
       now,
       id,

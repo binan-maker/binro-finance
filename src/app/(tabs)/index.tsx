@@ -439,6 +439,41 @@ export default function HomeScreen() {
         />
       </AppCard>
 
+      {/* Optional Home Budget Shortcut (off by default, toggled in Settings -> Preferences) */}
+      {settings.showHomeBudgetShortcut ? (
+        <AppCard>
+          <Pressable
+            onPress={() => router.push('/budgets')}
+            accessibilityRole="button"
+            accessibilityLabel="Open Budgets"
+            style={({ pressed }) => [
+              styles.budgetShortcutRow,
+              pressed && styles.pressed,
+            ]}>
+            <View style={styles.budgetShortcutLeft}>
+              <View
+                style={[
+                  styles.budgetShortcutIcon,
+                  { backgroundColor: theme.primarySoft },
+                ]}>
+                <Ionicons name="pie-chart-outline" size={18} color={theme.primary} />
+              </View>
+              <View style={styles.budgetShortcutTextWrap}>
+                <Text style={[styles.budgetShortcutTitle, { color: theme.text }]}>
+                  Budgets
+                </Text>
+                <Text
+                  style={[styles.budgetShortcutSub, { color: theme.textSecondary }]}
+                  numberOfLines={1}>
+                  Monthly, paycheck & annual limits
+                </Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
+          </Pressable>
+        </AppCard>
+      ) : null}
+
       {/* Recent Transactions (Flat 5-item list with inline date & time subtitle) */}
       <View style={styles.recentHeader}>
         <Text style={[styles.sectionTitle, { color: theme.text }]}>
@@ -657,5 +692,35 @@ const styles = StyleSheet.create({
   },
   recentList: {
     gap: Spacing.two,
+  },
+  budgetShortcutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+  },
+  budgetShortcutLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two + 2,
+    flex: 1,
+  },
+  budgetShortcutIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  budgetShortcutTextWrap: {
+    flex: 1,
+    gap: 1,
+  },
+  budgetShortcutTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  budgetShortcutSub: {
+    fontSize: 12,
   },
 });

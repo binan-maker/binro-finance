@@ -12,7 +12,7 @@ export type DateFormatPreference =
   | 'MM/DD/YYYY'
   | 'DD MMM YYYY';
 
-export type BudgetPeriod = 'monthly';
+export type BudgetPeriod = 'monthly' | 'biweekly' | 'yearly';
 
 export type NotificationType = 'backup' | 'budget_alert' | 'system';
 
@@ -59,6 +59,7 @@ export interface Category {
   parentId: string | null;
   icon: string;
   color: string;
+  imageUri: string | null;
   isDefault: boolean;
   isArchived: boolean;
   createdAt: string;
@@ -72,7 +73,8 @@ export interface Budget {
   period: BudgetPeriod;
   month: number; // 1-12
   year: number;
-  categoryId: string | null; // null = monthly overall budget
+  startDate: string | null; // YYYY-MM-DD anchor date for biweekly budgets
+  categoryId: string | null; // null = period overall budget
   createdAt: string;
   updatedAt: string;
 }
@@ -89,6 +91,7 @@ export interface AppSettings {
   profileBio: string | null;
   profileAvatar: string | null;
   currencyInitialized: boolean;
+  showHomeBudgetShortcut: boolean;
 }
 
 export interface AppNotification {

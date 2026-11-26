@@ -60,7 +60,7 @@ export class SQLiteBackupRepository implements IBackupRepository {
     }
 
     return {
-      schemaVersion: 2,
+      schemaVersion: 4,
       exportedAt: new Date().toISOString(),
       appVersion,
       settings,
@@ -115,8 +115,8 @@ export class SQLiteBackupRepository implements IBackupRepository {
           `INSERT INTO app_settings (
             id, currency_code, opening_balance_minor, opening_balance_currency_code,
             theme, date_format, onboarding_completed, profile_name, profile_bio,
-            profile_avatar, currency_initialized
-          ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            profile_avatar, currency_initialized, show_home_budget_shortcut
+          ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           backupDefaultCurrency,
           payload.settings.openingBalanceMinor,
           backupOpeningCurrency,
@@ -127,6 +127,7 @@ export class SQLiteBackupRepository implements IBackupRepository {
           payload.settings.profileBio ?? null,
           payload.settings.profileAvatar ?? null,
           1,
+          payload.settings.showHomeBudgetShortcut ? 1 : 0,
         );
       }
 
@@ -177,14 +178,15 @@ export class SQLiteBackupRepository implements IBackupRepository {
 
         const res = await db.runAsync(
           `INSERT OR IGNORE INTO categories (
-            id, name, type, parent_id, icon, color, is_default, is_archived, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            id, name, type, parent_id, icon, color, image_uri, is_default, is_archived, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           cat.id,
           trimmedName,
           cat.type,
           resolvedParentId,
           cat.icon,
           cat.color,
+          cat.imageUri ?? null,
           cat.isDefault ? 1 : 0,
           cat.isArchived ? 1 : 0,
           cat.createdAt,
@@ -342,14 +344,15 @@ export class SQLiteBackupRepository implements IBackupRepository {
         const budgetCurrency = (b.currencyCode ?? backupDefaultCurrency).trim().toUpperCase();
         const res = await db.runAsync(
           `INSERT OR IGNORE INTO budgets (
-            id, amount_minor, currency_code, period, month, year, category_id, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            id, amount_minor, currency_code, period, month, year, start_date, category_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           b.id,
           b.amountMinor,
           budgetCurrency,
           b.period,
           b.month,
           b.year,
+          b.startDate ?? null,
           resolvedCategoryId,
           b.createdAt,
           b.updatedAt,

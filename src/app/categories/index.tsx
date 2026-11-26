@@ -1,10 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +16,7 @@ import {
   AppHeader,
   AppInput,
   AppScreen,
+  BottomSheetModal,
   CategoryIcon,
   EmptyState,
   SegmentedControl,
@@ -30,6 +28,10 @@ import {
 } from '@/constants/categories';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import {
+  deleteStoredImage,
+  pickAndSaveSquareImage,
+} from '@/services/images/localImageStorage';
 import { useAppStore } from '@/store/app-store';
 import type { Category, CategoryType } from '@/types/models';
 import { formatMoney } from '@/utils/money';
@@ -54,8 +56,20 @@ export default function CategoriesScreen() {
   const [parentIdInput, setParentIdInput] = useState<string | null>(null);
   const [iconInput, setIconInput] = useState<string>(CATEGORY_ICON_OPTIONS[0]);
   const [colorInput, setColorInput] = useState<string>(CATEGORY_COLOR_OPTIONS[0]);
+  const [imageUriInput, setImageUriInput] = useState<string | null>(null);
+  const [pickingImage, setPickingImage] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const unsavedImageRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (unsavedImageRef.current) {
+        deleteStoredImage(unsavedImageRef.current);
+      }
+    };
+  }, []);
 
   const typeOptions = useMemo<readonly SegmentOption<CategoryType>[]>(
     () => [
@@ -139,12 +153,56 @@ export default function CategoriesScreen() {
   );
 
   const openCreateModal = () => {
+    if (unsavedImageRef.current) {
+      deleteStoredImage(unsavedImageRef.current);
+      unsavedImageRef.current = null;
+    }
     setNameInput('');
     setParentIdInput(null);
     setIconInput(selectedType === 'income' ? 'briefcase' : 'tag');
     setColorInput(CATEGORY_COLOR_OPTIONS[0]);
+    setImageUriInput(null);
     setEditorError(null);
     setEditorVisible(true);
+  };
+
+  const closeEditor = () => {
+    if (unsavedImageRef.current) {
+      deleteStoredImage(unsavedImageRef.current);
+      unsavedImageRef.current = null;
+    }
+    setImageUriInput(null);
+    setEditorVisible(false);
+  };
+
+  const handlePickImage = async () => {
+    if (pickingImage || saving) return;
+    setPickingImage(true);
+    setEditorError(null);
+    try {
+      const result = await pickAndSaveSquareImage('categories');
+      if (result.error) {
+        setEditorError(result.error);
+        return;
+      }
+      if (!result.canceled && result.relativePath) {
+        if (unsavedImageRef.current) {
+          deleteStoredImage(unsavedImageRef.current);
+        }
+        unsavedImageRef.current = result.relativePath;
+        setImageUriInput(result.relativePath);
+      }
+    } finally {
+      setPickingImage(false);
+    }
+  };
+
+  const handleRemoveImage = () => {
+    if (unsavedImageRef.current) {
+      deleteStoredImage(unsavedImageRef.current);
+      unsavedImageRef.current = null;
+    }
+    setImageUriInput(null);
   };
 
   const handleCreateCategory = async () => {
@@ -175,7 +233,9 @@ export default function CategoriesScreen() {
         parentId: parentIdInput,
         icon: iconInput,
         color: colorInput,
+        imageUri: imageUriInput,
       });
+      unsavedImageRef.current = null;
       setEditorVisible(false);
     } catch (error) {
       setEditorError(
@@ -315,7 +375,12 @@ export default function CategoriesScreen() {
                 style={({ pressed }) => [pressed && styles.pressed]}>
                 <AppCard style={isSub ? styles.subCard : undefined}>
                   <View style={styles.catRow}>
-                    <CategoryIcon icon={cat.icon} color={cat.color} size={40} />
+                    <CategoryIcon
+                      icon={cat.icon}
+                      color={cat.color}
+                      imageUri={cat.imageUri}
+                      size={40}
+                    />
                     <View style={styles.catMeta}>
                       <View style={styles.nameRow}>
                         <Text style={[styles.catName, { color: theme.text }]}>
@@ -355,175 +420,208 @@ export default function CategoriesScreen() {
         </View>
       )}
 
-      {/* Create Category Modal */}
-      <Modal
+      {/* Create Category Sheet */}
+      <BottomSheetModal
         visible={editorVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setEditorVisible(false)}>
-        <KeyboardAvoidingView
-          style={styles.modalBackdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        onClose={closeEditor}
+        keyboardAvoiding>
+        <View style={styles.sheetHeader}>
+          <Text style={[styles.modalTitle, { color: theme.text }]}>
+            {selectedType === 'income' ? 'New Income Category' : 'New Expense Category'}
+          </Text>
           <Pressable
-            style={styles.backdropDismiss}
-            onPress={() => setEditorVisible(false)}
-          />
-          <View
-            style={[
-              styles.modalSheet,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>
-              {selectedType === 'income' ? 'New Income Category' : 'New Expense Category'}
-            </Text>
+            onPress={closeEditor}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close category modal">
+            <Ionicons name="close" size={22} color={theme.textSecondary} />
+          </Pressable>
+        </View>
 
-            <ScrollView
-              style={styles.modalScroll}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}>
-              <View style={styles.modalBody}>
-                <AppInput
-                  label="Category Name"
-                  value={nameInput}
-                  onChangeText={(text) => {
-                    setNameInput(text);
-                    if (editorError) setEditorError(null);
-                  }}
-                  placeholder="e.g. Subscriptions, Coffee"
-                  maxLength={40}
-                  error={editorError}
+        <ScrollView
+          style={styles.modalScroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}>
+          <View style={styles.modalBody}>
+            <AppInput
+              label="Category Name"
+              value={nameInput}
+              onChangeText={(text) => {
+                setNameInput(text);
+                if (editorError) setEditorError(null);
+              }}
+              placeholder="e.g. Subscriptions, Coffee"
+              maxLength={40}
+              error={editorError}
+            />
+
+            <View style={styles.imageSection}>
+              <Text style={[styles.fieldLabel, { color: theme.text }]}>
+                Custom Image (Optional)
+              </Text>
+              <View style={styles.imageRow}>
+                <CategoryIcon
+                  icon={iconInput}
+                  color={colorInput}
+                  imageUri={imageUriInput}
+                  size={48}
                 />
+                <View style={styles.imageButtonsRow}>
+                  <View style={styles.flex1}>
+                    <AppButton
+                      label={imageUriInput ? 'Change Image' : 'Upload Image'}
+                      size="sm"
+                      variant="outline"
+                      loading={pickingImage}
+                      icon={<Ionicons name="image-outline" size={16} color={theme.text} />}
+                      onPress={() => void handlePickImage()}
+                      fullWidth
+                    />
+                  </View>
+                  {imageUriInput ? (
+                    <View style={styles.flex1}>
+                      <AppButton
+                        label="Remove"
+                        size="sm"
+                        variant="outline"
+                        icon={<Ionicons name="trash-outline" size={15} color={theme.danger} />}
+                        onPress={handleRemoveImage}
+                        fullWidth
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            </View>
 
-                {parentCandidates.length > 0 ? (
-                  <>
-                    <Text style={[styles.fieldLabel, { color: theme.text }]}>
-                      Parent Category (Optional)
+            {parentCandidates.length > 0 ? (
+              <>
+                <Text style={[styles.fieldLabel, { color: theme.text }]}>
+                  Parent Category (Optional)
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.parentChips}>
+                  <Pressable
+                    onPress={() => setParentIdInput(null)}
+                    style={[
+                      styles.parentChip,
+                      {
+                        backgroundColor:
+                          parentIdInput === null
+                            ? theme.primarySoft
+                            : theme.surfaceElevated,
+                        borderColor:
+                          parentIdInput === null ? theme.primary : theme.border,
+                      },
+                    ]}>
+                    <Text
+                      style={[
+                        styles.parentChipText,
+                        {
+                          color:
+                            parentIdInput === null ? theme.primary : theme.text,
+                        },
+                      ]}>
+                      Top-Level
                     </Text>
-                    <ScrollView
-                      horizontal
-                      showsHorizontalScrollIndicator={false}
-                      contentContainerStyle={styles.parentChips}>
+                  </Pressable>
+                  {parentCandidates.map((p) => {
+                    const selected = parentIdInput === p.id;
+                    return (
                       <Pressable
-                        onPress={() => setParentIdInput(null)}
+                        key={p.id}
+                        onPress={() => setParentIdInput(p.id)}
                         style={[
                           styles.parentChip,
                           {
-                            backgroundColor:
-                              parentIdInput === null
-                                ? theme.primarySoft
-                                : theme.surfaceElevated,
-                            borderColor:
-                              parentIdInput === null ? theme.primary : theme.border,
+                            backgroundColor: selected
+                              ? theme.primarySoft
+                              : theme.surfaceElevated,
+                            borderColor: selected ? theme.primary : theme.border,
                           },
                         ]}>
                         <Text
                           style={[
                             styles.parentChipText,
-                            {
-                              color:
-                                parentIdInput === null ? theme.primary : theme.text,
-                            },
+                            { color: selected ? theme.primary : theme.text },
                           ]}>
-                          Top-Level
+                          {p.name}
                         </Text>
                       </Pressable>
-                      {parentCandidates.map((p) => {
-                        const selected = parentIdInput === p.id;
-                        return (
-                          <Pressable
-                            key={p.id}
-                            onPress={() => setParentIdInput(p.id)}
-                            style={[
-                              styles.parentChip,
-                              {
-                                backgroundColor: selected
-                                  ? theme.primarySoft
-                                  : theme.surfaceElevated,
-                                borderColor: selected ? theme.primary : theme.border,
-                              },
-                            ]}>
-                            <Text
-                              style={[
-                                styles.parentChipText,
-                                { color: selected ? theme.primary : theme.text },
-                              ]}>
-                              {p.name}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                  </>
-                ) : null}
-
-                <Text style={[styles.fieldLabel, { color: theme.text }]}>Icon</Text>
-                <View style={styles.optionGrid}>
-                  {CATEGORY_ICON_OPTIONS.map((iconKey) => {
-                    const selected = iconInput === iconKey;
-                    return (
-                      <Pressable
-                        key={iconKey}
-                        onPress={() => setIconInput(iconKey)}
-                        style={[
-                          styles.iconChoice,
-                          {
-                            borderColor: selected ? theme.primary : theme.border,
-                            backgroundColor: selected
-                              ? theme.primarySoft
-                              : theme.surfaceElevated,
-                          },
-                        ]}>
-                        <CategoryIcon icon={iconKey} color={colorInput} size={32} />
-                      </Pressable>
                     );
                   })}
-                </View>
+                </ScrollView>
+              </>
+            ) : null}
 
-                <Text style={[styles.fieldLabel, { color: theme.text }]}>Color</Text>
-                <View style={styles.optionGrid}>
-                  {CATEGORY_COLOR_OPTIONS.map((swatch) => {
-                    const selected = colorInput === swatch;
-                    return (
-                      <Pressable
-                        key={swatch}
-                        onPress={() => setColorInput(swatch)}
-                        style={[
-                          styles.colorSwatch,
-                          {
-                            backgroundColor: swatch,
-                            borderColor: selected ? theme.text : 'transparent',
-                            borderWidth: selected ? 3 : 0,
-                          },
-                        ]}
-                      />
-                    );
-                  })}
-                </View>
-              </View>
-            </ScrollView>
+            <Text style={[styles.fieldLabel, { color: theme.text }]}>Icon</Text>
+            <View style={styles.optionGrid}>
+              {CATEGORY_ICON_OPTIONS.map((iconKey) => {
+                const selected = iconInput === iconKey;
+                return (
+                  <Pressable
+                    key={iconKey}
+                    onPress={() => setIconInput(iconKey)}
+                    style={[
+                      styles.iconChoice,
+                      {
+                        borderColor: selected ? theme.primary : theme.border,
+                        backgroundColor: selected
+                          ? theme.primarySoft
+                          : theme.surfaceElevated,
+                      },
+                    ]}>
+                    <CategoryIcon icon={iconKey} color={colorInput} size={32} />
+                  </Pressable>
+                );
+              })}
+            </View>
 
-            <View style={styles.modalActions}>
-              <View style={styles.flex1}>
-                <AppButton
-                  label="Cancel"
-                  variant="outline"
-                  onPress={() => setEditorVisible(false)}
-                  disabled={saving}
-                  fullWidth
-                />
-              </View>
-              <View style={styles.flex1}>
-                <AppButton
-                  label="Save"
-                  onPress={() => void handleCreateCategory()}
-                  loading={saving}
-                  fullWidth
-                />
-              </View>
+            <Text style={[styles.fieldLabel, { color: theme.text }]}>Color</Text>
+            <View style={styles.optionGrid}>
+              {CATEGORY_COLOR_OPTIONS.map((swatch) => {
+                const selected = colorInput === swatch;
+                return (
+                  <Pressable
+                    key={swatch}
+                    onPress={() => setColorInput(swatch)}
+                    style={[
+                      styles.colorSwatch,
+                      {
+                        backgroundColor: swatch,
+                        borderColor: selected ? theme.text : 'transparent',
+                        borderWidth: selected ? 3 : 0,
+                      },
+                    ]}
+                  />
+                );
+              })}
             </View>
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
+        </ScrollView>
+
+        <View style={styles.modalActions}>
+          <View style={styles.flex1}>
+            <AppButton
+              label="Cancel"
+              variant="outline"
+              onPress={closeEditor}
+              disabled={saving}
+              fullWidth
+            />
+          </View>
+          <View style={styles.flex1}>
+            <AppButton
+              label="Save"
+              onPress={() => void handleCreateCategory()}
+              loading={saving}
+              fullWidth
+            />
+          </View>
+        </View>
+      </BottomSheetModal>
     </AppScreen>
   );
 }
@@ -609,31 +707,33 @@ const styles = StyleSheet.create({
   catTotal: {
     fontSize: 12,
   },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'flex-end',
-  },
-  backdropDismiss: {
-    flex: 1,
-  },
-  modalSheet: {
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    borderWidth: 1,
-    padding: Spacing.four,
-    gap: Spacing.three,
-    maxHeight: '86%',
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: '700',
   },
   modalScroll: {
-    maxHeight: 420,
+    maxHeight: 380,
   },
   modalBody: {
     gap: Spacing.three,
+  },
+  imageSection: {
+    gap: Spacing.two,
+  },
+  imageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
+  imageButtonsRow: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: Spacing.two,
   },
   fieldLabel: {
     fontSize: 13,

@@ -1,8 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 
 import type { CurrencyConfig } from '@/constants/currencies';
-import { getMonthRange, getWeekRange, getYearRange, isValidISODate } from '@/utils/date';
+import {
+  getBiweeklyPeriodForDate,
+  getBiweeklyPeriodRange,
+  getMonthRange,
+  getWeekRange,
+  getYearRange,
+  isValidISODate,
+} from '@/utils/date';
 import { formatMinorToMajorInput, formatMoney, parseMajorToMinor } from '@/utils/money';
+import { getProfileInitials } from '@/utils/profile';
 import { generateUUID, isValidUUID } from '@/utils/uuid';
 import {
   validateBackupPayload,
@@ -77,6 +85,77 @@ describe('date utilities', () => {
       startDate: '2026-11-23',
       endDate: '2026-11-29',
     });
+  });
+
+  test('computes real 14-day biweekly windows across month, year-end, and leap-year boundaries', () => {
+    // Standard month boundary: 2026-11-25 + 13 days = 2026-12-08
+    expect(getBiweeklyPeriodRange('2026-11-25', 0)).toEqual({
+      anchorDate: '2026-11-25',
+      cycleIndex: 0,
+      startDate: '2026-11-25',
+      endDate: '2026-12-08',
+      nextStartDate: '2026-12-09',
+      nextEndDate: '2026-12-22',
+    });
+
+    // Year-end boundary: 2026-12-25 + 13 days = 2027-01-07
+    expect(getBiweeklyPeriodRange('2026-12-25', 0)).toEqual({
+      anchorDate: '2026-12-25',
+      cycleIndex: 0,
+      startDate: '2026-12-25',
+      endDate: '2027-01-07',
+      nextStartDate: '2027-01-08',
+      nextEndDate: '2027-01-21',
+    });
+
+    // Leap year February (29 days): 2024-02-20 + 13 days = 2024-03-04
+    const leapFeb = getBiweeklyPeriodRange('2024-02-20', 0);
+    expect({
+      startDate: leapFeb.startDate,
+      endDate: leapFeb.endDate,
+      nextStartDate: leapFeb.nextStartDate,
+    }).toEqual({
+      startDate: '2024-02-20',
+      endDate: '2024-03-04',
+      nextStartDate: '2024-03-05',
+    });
+
+    // Non-leap year February (28 days): 2026-02-20 + 13 days = 2026-03-05
+    const stdFeb = getBiweeklyPeriodRange('2026-02-20', 0);
+    expect({
+      startDate: stdFeb.startDate,
+      endDate: stdFeb.endDate,
+      nextStartDate: stdFeb.nextStartDate,
+    }).toEqual({
+      startDate: '2026-02-20',
+      endDate: '2026-03-05',
+      nextStartDate: '2026-03-06',
+    });
+
+    // Resolving a cycle for a target date anchored in the past
+    const resolved = getBiweeklyPeriodForDate('2026-10-01', '2026-10-18');
+    expect({
+      cycleIndex: resolved.cycleIndex,
+      startDate: resolved.startDate,
+      endDate: resolved.endDate,
+      nextStartDate: resolved.nextStartDate,
+    }).toEqual({
+      cycleIndex: 1,
+      startDate: '2026-10-15',
+      endDate: '2026-10-28',
+      nextStartDate: '2026-10-29',
+    });
+  });
+});
+
+describe('profile initials helper', () => {
+  test('derives initials cleanly from multi-word, single-word, and empty names', () => {
+    expect(getProfileInitials('Ahmed Sameer Binan')).toBe('AS');
+    expect(getProfileInitials('John David')).toBe('JD');
+    expect(getProfileInitials('Priya')).toBe('P');
+    expect(getProfileInitials('   ')).toBe('BF');
+    expect(getProfileInitials(null)).toBe('BF');
+    expect(getProfileInitials(undefined)).toBe('BF');
   });
 });
 
@@ -218,6 +297,105 @@ describe('uuid & validation', () => {
             paymentMethod: 'Card',
             transactionDate: '2026-11-25',
             note: null,
+            createdAt: '2026-11-25T00:00:00.000Z',
+            updatedAt: '2026-11-25T00:00:00.000Z',
+          },
+        ],
+      }).valid,
+    ).toBe(false);
+
+    // Valid V4 payload with biweekly/yearly budgets, category imageUri, shortcut flag & mediaAssets
+    expect(
+      validateBackupPayload({
+        ...baseValidV1,
+        schemaVersion: 4,
+        settings: {
+          ...baseValidV1.settings,
+          openingBalanceCurrencyCode: 'INR',
+          showHomeBudgetShortcut: true,
+        },
+        categories: [
+          {
+            id: 'cat-1',
+            name: 'Coffee',
+            type: 'expense',
+            parentId: null,
+            icon: 'coffee',
+            color: '#10B981',
+            imageUri: 'file:///docs/binro_images/categories/c1.jpg',
+            isDefault: false,
+            isArchived: false,
+            createdAt: '2026-11-25T00:00:00.000Z',
+            updatedAt: '2026-11-25T00:00:00.000Z',
+          },
+        ],
+        budgets: [
+          {
+            id: 'b-bw',
+            amountMinor: 100000,
+            currencyCode: 'INR',
+            period: 'biweekly',
+            month: 11,
+            year: 2026,
+            startDate: '2026-11-25',
+            categoryId: null,
+            createdAt: '2026-11-25T00:00:00.000Z',
+            updatedAt: '2026-11-25T00:00:00.000Z',
+          },
+          {
+            id: 'b-yr',
+            amountMinor: 2400000,
+            currencyCode: 'INR',
+            period: 'yearly',
+            month: 1,
+            year: 2026,
+            startDate: null,
+            categoryId: 'cat-1',
+            createdAt: '2026-11-25T00:00:00.000Z',
+            updatedAt: '2026-11-25T00:00:00.000Z',
+          },
+        ],
+        mediaAssets: {
+          'file:///docs/binro_images/categories/c1.jpg': {
+            mimeType: 'image/jpeg',
+            base64: 'ZmFrZQ==',
+          },
+        },
+      }).valid,
+    ).toBe(true);
+
+    // Invalid biweekly startDate & invalid period
+    expect(
+      validateBackupPayload({
+        ...baseValidV1,
+        schemaVersion: 4,
+        budgets: [
+          {
+            id: 'b-bad',
+            amountMinor: 1000,
+            period: 'weekly',
+            month: 11,
+            year: 2026,
+            categoryId: null,
+            createdAt: '2026-11-25T00:00:00.000Z',
+            updatedAt: '2026-11-25T00:00:00.000Z',
+          },
+        ],
+      }).valid,
+    ).toBe(false);
+    expect(
+      validateBackupPayload({
+        ...baseValidV1,
+        schemaVersion: 4,
+        budgets: [
+          {
+            id: 'b-bad-date',
+            amountMinor: 1000,
+            period: 'biweekly',
+            month: 2,
+            year: 2026,
+            startDate: '2026-02-30',
+            categoryId: null,
             createdAt: '2026-11-25T00:00:00.000Z',
             updatedAt: '2026-11-25T00:00:00.000Z',
           },

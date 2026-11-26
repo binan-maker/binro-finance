@@ -5,7 +5,12 @@ import * as Sharing from 'expo-sharing';
 import type { CurrencyConfig } from '@/constants/currencies';
 import { repositories } from '@/database/repositories';
 import { buildTransactionsCsv } from '@/services/export/csvExport';
-import type { BackupPayload } from '@/types/database';
+import {
+  isLocalRelativeImagePath,
+  readStoredImageAsset,
+  restoreMediaAssetToDisk,
+} from '@/services/images/localImageStorage';
+import type { BackupMediaAsset, BackupPayload } from '@/types/database';
 import type { Tag, Transaction } from '@/types/models';
 import { getTodayISODate } from '@/utils/date';
 
@@ -66,7 +71,28 @@ export async function exportJsonBackupFile(appVersion: string): Promise<{
   shared: boolean;
 }> {
   const payload = await repositories.backup.exportAll(appVersion);
-  const json = serializeBackupPayload(payload);
+  const mediaAssets: Record<string, BackupMediaAsset> = {};
+
+  for (const cat of payload.categories) {
+    if (cat.imageUri && isLocalRelativeImagePath(cat.imageUri)) {
+      const asset = await readStoredImageAsset(cat.imageUri);
+      if (asset) {
+        mediaAssets[cat.imageUri] = asset;
+      }
+    }
+  }
+
+  if (payload.settings.profileAvatar && isLocalRelativeImagePath(payload.settings.profileAvatar)) {
+    const asset = await readStoredImageAsset(payload.settings.profileAvatar);
+    if (asset) {
+      mediaAssets[payload.settings.profileAvatar] = asset;
+    }
+  }
+
+  const enrichedPayload: BackupPayload =
+    Object.keys(mediaAssets).length > 0 ? { ...payload, mediaAssets } : payload;
+
+  const json = serializeBackupPayload(enrichedPayload);
   const stamp = getTodayISODate();
   const res = await writeAndShareTextFile({
     filename: `binro-finance-backup-${stamp}.json`,
@@ -74,7 +100,44 @@ export async function exportJsonBackupFile(appVersion: string): Promise<{
     mimeType: 'application/json',
     dialogTitle: 'Export Complete JSON Backup',
   });
-  return { payload, ...res };
+  return { payload: enrichedPayload, ...res };
+}
+
+export function materializeBackupMediaAssets(payload: BackupPayload): BackupPayload {
+  const assets = payload.mediaAssets ?? {};
+  const restoredKeys = new Set<string>();
+
+  for (const [key, asset] of Object.entries(assets)) {
+    const restoredPath = restoreMediaAssetToDisk(key, asset);
+    if (restoredPath) {
+      restoredKeys.add(restoredPath);
+    }
+  }
+
+  const categories = payload.categories.map((cat) => {
+    if (!cat.imageUri) return cat;
+    if (isLocalRelativeImagePath(cat.imageUri) && restoredKeys.has(cat.imageUri)) {
+      return cat;
+    }
+    return { ...cat, imageUri: null };
+  });
+
+  const profileAvatar =
+    payload.settings.profileAvatar &&
+    isLocalRelativeImagePath(payload.settings.profileAvatar)
+      ? restoredKeys.has(payload.settings.profileAvatar)
+        ? payload.settings.profileAvatar
+        : null
+      : payload.settings.profileAvatar;
+
+  return {
+    ...payload,
+    settings: {
+      ...payload.settings,
+      profileAvatar,
+    },
+    categories,
+  };
 }
 
 export async function pickAndValidateJsonBackupFile(): Promise<{

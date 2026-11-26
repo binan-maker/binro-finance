@@ -2,6 +2,7 @@ import { DEFAULT_CURRENCY_CODE } from '@/constants/currencies';
 import type {
   AppSettings,
   Budget,
+  BudgetPeriod,
   Category,
   PaymentMethodRecord,
   Tag,
@@ -9,6 +10,8 @@ import type {
   TransactionType,
 } from '@/types/models';
 import type {
+  BudgetHealthStatus,
+  BudgetOverviewStats,
   BudgetProgress,
   CategoryBreakdownItem,
   ComparisonBucket,
@@ -28,7 +31,9 @@ import type {
 } from '@/types/reports';
 import {
   addDaysToISODate,
+  diffDaysISODate,
   enumerateDatesInRange,
+  getBiweeklyPeriodForDate,
   getDaysInMonth,
   getMonthLabel,
   getMonthRange,
@@ -1101,37 +1106,177 @@ export function buildFinancialTrendPoints(params: {
   return sampled;
 }
 
+export function resolveBudgetPeriodRange(params: {
+  budget: Budget;
+  referenceDate?: string;
+}): {
+  startDate: string;
+  endDate: string;
+  nextPeriodStartDate: string | null;
+  nextPeriodEndDate: string | null;
+} {
+  const { budget, referenceDate } = params;
+  if (budget.period === 'biweekly') {
+    const anchor = budget.startDate ?? toISODate(budget.year, budget.month, 1);
+    const biweekly = getBiweeklyPeriodForDate(anchor, referenceDate ?? anchor);
+    return {
+      startDate: biweekly.startDate,
+      endDate: biweekly.endDate,
+      nextPeriodStartDate: biweekly.nextStartDate,
+      nextPeriodEndDate: biweekly.nextEndDate,
+    };
+  }
+
+  if (budget.period === 'yearly') {
+    const { startDate, endDate } = getYearRange(budget.year);
+    return {
+      startDate,
+      endDate,
+      nextPeriodStartDate: null,
+      nextPeriodEndDate: null,
+    };
+  }
+
+  const { startDate, endDate } = getMonthRange(budget.year, budget.month);
+  return {
+    startDate,
+    endDate,
+    nextPeriodStartDate: null,
+    nextPeriodEndDate: null,
+  };
+}
+
+export function getBudgetHealthStatus(
+  percentageUsed: number,
+  isExceeded: boolean,
+): BudgetHealthStatus {
+  if (isExceeded || percentageUsed > 100) return 'exceeded';
+  if (percentageUsed >= 85) return 'warning';
+  return 'healthy';
+}
+
 export function calculateBudgetProgress(params: {
   budget: Budget;
   transactions: readonly Transaction[];
   category?: Category | null;
+  referenceDate?: string;
 }): BudgetProgress {
-  const { budget, transactions, category } = params;
-  const { startDate, endDate } = getMonthRange(budget.year, budget.month);
+  const { budget, transactions, category, referenceDate } = params;
+  const range = resolveBudgetPeriodRange({ budget, referenceDate });
 
   let spentMinor = 0;
   for (const tx of transactions) {
     if (tx.type !== 'expense') continue;
     if (tx.currencyCode.toUpperCase() !== budget.currencyCode.toUpperCase()) continue;
-    if (tx.transactionDate < startDate || tx.transactionDate > endDate) continue;
+    if (tx.transactionDate < range.startDate || tx.transactionDate > range.endDate) continue;
     if (budget.categoryId !== null && tx.categoryId !== budget.categoryId) continue;
     spentMinor += tx.amountMinor;
   }
 
+  const dayCount = Math.max(diffDaysISODate(range.startDate, range.endDate) + 1, 1);
+  const dailyAverageSpentMinor = Math.round(spentMinor / dayCount);
   const remainingMinor = budget.amountMinor - spentMinor;
   const percentageUsed =
     budget.amountMinor > 0
       ? Math.round((spentMinor / budget.amountMinor) * 1000) / 10
       : 0;
+  const isExceeded = spentMinor > budget.amountMinor;
+  const monthlyContributionMinor =
+    budget.period === 'yearly' ? Math.round(budget.amountMinor / 12) : null;
 
   return {
     budget,
     categoryName: category?.name ?? null,
     categoryColor: category?.color ?? null,
+    categoryIcon: category?.icon ?? null,
+    categoryImageUri: category?.imageUri ?? null,
+    periodStartDate: range.startDate,
+    periodEndDate: range.endDate,
+    nextPeriodStartDate: range.nextPeriodStartDate,
+    nextPeriodEndDate: range.nextPeriodEndDate,
+    monthlyContributionMinor,
+    dailyAverageSpentMinor,
     spentMinor,
     remainingMinor,
     percentageUsed,
-    isExceeded: spentMinor > budget.amountMinor,
+    isExceeded,
+    status: getBudgetHealthStatus(percentageUsed, isExceeded),
+  };
+}
+
+export function calculateBudgetOverviewStats(params: {
+  period: BudgetPeriod;
+  periodStartDate: string;
+  periodEndDate: string;
+  currencyCode: string;
+  transactions: readonly Transaction[];
+  categories: readonly Category[];
+  overallProgress: BudgetProgress | null;
+  categoryProgressList: readonly BudgetProgress[];
+}): BudgetOverviewStats {
+  const {
+    period,
+    periodStartDate,
+    periodEndDate,
+    currencyCode,
+    transactions,
+    categories,
+    overallProgress,
+    categoryProgressList,
+  } = params;
+
+  const analytics = buildReportAnalytics({
+    transactions,
+    categories,
+    currencyCode,
+    startDate: periodStartDate,
+    endDate: periodEndDate,
+    granularity: period === 'yearly' ? 'monthly' : 'daily',
+  });
+
+  const hasOverall = Boolean(overallProgress);
+  const hasCategories = categoryProgressList.length > 0;
+  const hasAnyBudget = hasOverall || hasCategories;
+
+  let totalBudgetMinor = 0;
+  let totalSpentMinor = analytics.totalExpensesMinor;
+
+  if (overallProgress) {
+    totalBudgetMinor = overallProgress.budget.amountMinor;
+    totalSpentMinor = overallProgress.spentMinor;
+  } else if (hasCategories) {
+    totalSpentMinor = 0;
+    for (const item of categoryProgressList) {
+      totalBudgetMinor += item.budget.amountMinor;
+      totalSpentMinor += item.spentMinor;
+    }
+  }
+
+  const remainingMinor = hasAnyBudget ? totalBudgetMinor - totalSpentMinor : 0;
+  const percentageUsed =
+    hasAnyBudget && totalBudgetMinor > 0
+      ? Math.round((totalSpentMinor / totalBudgetMinor) * 1000) / 10
+      : 0;
+  const isExceeded = hasAnyBudget && totalSpentMinor > totalBudgetMinor;
+
+  const monthlyContributionMinor =
+    period === 'yearly' && hasAnyBudget ? Math.round(totalBudgetMinor / 12) : null;
+
+  return {
+    currencyCode: analytics.currencyCode,
+    periodStartDate: analytics.startDate,
+    periodEndDate: analytics.endDate,
+    totalBudgetMinor,
+    totalSpentMinor,
+    remainingMinor,
+    percentageUsed,
+    status: getBudgetHealthStatus(percentageUsed, isExceeded),
+    hasAnyBudget,
+    hasExpenseData: analytics.expenseTransactionCount > 0,
+    dailyAverageSpentMinor: analytics.averageDailyExpenseMinor,
+    highestSpendingCategory: analytics.highestSpendingCategory,
+    spendingTrend: analytics.spendingTrend,
+    monthlyContributionMinor,
   };
 }
 

@@ -154,12 +154,40 @@ export interface ReportAnalytics {
   spendingTrend: SpendingTrendSeries;
 }
 
+export type BudgetHealthStatus = 'healthy' | 'warning' | 'exceeded';
+
 export interface BudgetProgress {
   budget: Budget;
   categoryName: string | null;
   categoryColor: string | null;
+  categoryIcon: string | null;
+  categoryImageUri: string | null;
+  periodStartDate: string;
+  periodEndDate: string;
+  nextPeriodStartDate: string | null;
+  nextPeriodEndDate: string | null;
+  monthlyContributionMinor: number | null;
+  dailyAverageSpentMinor: number;
   spentMinor: number;
   remainingMinor: number;
   percentageUsed: number;
   isExceeded: boolean;
+  status: BudgetHealthStatus;
+}
+
+export interface BudgetOverviewStats {
+  currencyCode: string;
+  periodStartDate: string;
+  periodEndDate: string;
+  totalBudgetMinor: number;
+  totalSpentMinor: number;
+  remainingMinor: number;
+  percentageUsed: number;
+  status: BudgetHealthStatus;
+  hasAnyBudget: boolean;
+  hasExpenseData: boolean;
+  dailyAverageSpentMinor: number;
+  highestSpendingCategory: CategoryBreakdownItem | null;
+  spendingTrend: SpendingTrendSeries;
+  monthlyContributionMinor: number | null;
 }

@@ -1,3 +1,8 @@
+export {
+  AnchoredActionMenu,
+  type AnchorRect,
+  type AnchoredMenuAction,
+} from './AnchoredActionMenu';
 export { AppButton } from './AppButton';
 export { AppCard } from './AppCard';
 export { AppHeader } from './AppHeader';

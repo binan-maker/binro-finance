@@ -7,12 +7,14 @@ import {
   v2RedesignMigration,
 } from './002_v2_redesign';
 import { v3ProfileTagsMigration } from './003_v3_profile_tags_archive';
+import { v4BudgetsImagesMigration } from './004_v4_budgets_images';
 import type { DatabaseMigration } from './types';
 
 export const MIGRATIONS: readonly DatabaseMigration[] = [
   initialMigration,
   v2RedesignMigration,
   v3ProfileTagsMigration,
+  v4BudgetsImagesMigration,
 ];
 
 interface UserVersionRow {

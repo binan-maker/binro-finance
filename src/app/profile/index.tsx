@@ -1,7 +1,8 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 
 import {
   AppButton,
@@ -12,37 +13,15 @@ import {
 } from '@/components/common';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import {
+  deleteStoredImage,
+  pickAndSaveSquareImage,
+  resolveLocalImageUri,
+} from '@/services/images/localImageStorage';
 import { useAppStore } from '@/store/app-store';
+import { getProfileInitials, PROFILE_AVATAR_COLOR } from '@/utils/profile';
 
-interface AvatarPreset {
-  id: string;
-  icon: keyof typeof Ionicons.glyphMap | null;
-  color: string;
-}
-
-const AVATAR_PRESETS: readonly AvatarPreset[] = [
-  { id: 'initials:#10B981', icon: null, color: '#10B981' },
-  { id: 'person:#059669', icon: 'person', color: '#059669' },
-  { id: 'wallet:#0EA5E9', icon: 'wallet', color: '#0EA5E9' },
-  { id: 'briefcase:#8B5CF6', icon: 'briefcase', color: '#8B5CF6' },
-  { id: 'leaf:#16A34A', icon: 'leaf', color: '#16A34A' },
-  { id: 'diamond:#F59E0B', icon: 'diamond', color: '#F59E0B' },
-];
-
-export function parseAvatarPreset(value: string | null): AvatarPreset {
-  const match = AVATAR_PRESETS.find((p) => p.id === value);
-  return match ?? AVATAR_PRESETS[0];
-}
-
-export function getProfileInitials(name: string | null | undefined): string {
-  const trimmed = (name ?? '').trim();
-  if (!trimmed) return 'BF';
-  const parts = trimmed.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) {
-    return parts[0].slice(0, 2).toUpperCase();
-  }
-  return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase();
-}
+export { getProfileInitials } from '@/utils/profile';
 
 export default function ProfileScreen() {
   const theme = useTheme();
@@ -53,15 +32,65 @@ export default function ProfileScreen() {
 
   const [displayName, setDisplayName] = useState(settings.profileName ?? '');
   const [bio, setBio] = useState(settings.profileBio ?? '');
-  const [avatarId, setAvatarId] = useState(
-    settings.profileAvatar ?? AVATAR_PRESETS[0].id,
+  const [avatarPath, setAvatarPath] = useState<string | null>(() =>
+    resolveLocalImageUri(settings.profileAvatar) ? settings.profileAvatar : null,
   );
+  const [failedAvatarUri, setFailedAvatarUri] = useState<string | null>(null);
+  const [pickingPhoto, setPickingPhoto] = useState(false);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState(false);
 
-  const activePreset = parseAvatarPreset(avatarId);
+  const unsavedUploadRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (unsavedUploadRef.current) {
+        deleteStoredImage(unsavedUploadRef.current);
+      }
+    };
+  }, []);
+
   const initials = getProfileInitials(displayName);
+  const resolvedAvatarUri = resolveLocalImageUri(avatarPath);
+  const showPhoto = Boolean(
+    resolvedAvatarUri && failedAvatarUri !== resolvedAvatarUri,
+  );
+
+  const handlePickPhoto = async () => {
+    if (pickingPhoto || saving) return;
+    setPickingPhoto(true);
+    setErrorMsg(null);
+    setSavedNotice(false);
+    try {
+      const result = await pickAndSaveSquareImage('profile');
+      if (result.error) {
+        setErrorMsg(result.error);
+        return;
+      }
+      if (!result.canceled && result.relativePath) {
+        if (unsavedUploadRef.current) {
+          deleteStoredImage(unsavedUploadRef.current);
+        }
+        unsavedUploadRef.current = result.relativePath;
+        setAvatarPath(result.relativePath);
+        setFailedAvatarUri(null);
+      }
+    } finally {
+      setPickingPhoto(false);
+    }
+  };
+
+  const handleRemovePhoto = () => {
+    if (unsavedUploadRef.current) {
+      deleteStoredImage(unsavedUploadRef.current);
+      unsavedUploadRef.current = null;
+    }
+    setAvatarPath(null);
+    setFailedAvatarUri(null);
+    setErrorMsg(null);
+    setSavedNotice(false);
+  };
 
   const handleSave = async () => {
     if (saving) return;
@@ -69,12 +98,20 @@ export default function ProfileScreen() {
     setErrorMsg(null);
     setSavedNotice(false);
 
+    const previousSavedAvatar = settings.profileAvatar;
+
     try {
       await updateSettings({
         profileName: displayName.trim() || null,
         profileBio: bio.trim() || null,
-        profileAvatar: avatarId,
+        profileAvatar: avatarPath,
       });
+
+      if (previousSavedAvatar && previousSavedAvatar !== avatarPath) {
+        deleteStoredImage(previousSavedAvatar);
+      }
+      unsavedUploadRef.current = null;
+
       setSavedNotice(true);
       if (router.canGoBack()) {
         router.back();
@@ -106,10 +143,15 @@ export default function ProfileScreen() {
           <View
             style={[
               styles.avatarCircle,
-              { backgroundColor: activePreset.color },
+              { backgroundColor: PROFILE_AVATAR_COLOR },
             ]}>
-            {activePreset.icon ? (
-              <Ionicons name={activePreset.icon} size={34} color="#FFFFFF" />
+            {showPhoto && resolvedAvatarUri ? (
+              <Image
+                source={{ uri: resolvedAvatarUri }}
+                style={styles.avatarImage}
+                contentFit="cover"
+                onError={() => setFailedAvatarUri(resolvedAvatarUri)}
+              />
             ) : (
               <Text style={styles.avatarInitials}>{initials}</Text>
             )}
@@ -124,35 +166,30 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        <Text style={[styles.label, { color: theme.text }]}>Avatar Style</Text>
-        <View style={styles.presetsRow}>
-          {AVATAR_PRESETS.map((preset) => {
-            const selected = preset.id === avatarId;
-            return (
-              <Pressable
-                key={preset.id}
-                onPress={() => {
-                  setAvatarId(preset.id);
-                  setSavedNotice(false);
-                }}
-                accessibilityRole="button"
-                accessibilityState={{ selected }}
-                style={[
-                  styles.presetBtn,
-                  {
-                    backgroundColor: preset.color,
-                    borderColor: selected ? theme.text : 'transparent',
-                    borderWidth: selected ? 3 : 0,
-                  },
-                ]}>
-                {preset.icon ? (
-                  <Ionicons name={preset.icon} size={20} color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.presetInitials}>{initials}</Text>
-                )}
-              </Pressable>
-            );
-          })}
+        <View style={styles.photoActionsRow}>
+          <View style={styles.flex1}>
+            <AppButton
+              label={showPhoto ? 'Replace Photo' : 'Upload Photo'}
+              variant="outline"
+              size="sm"
+              loading={pickingPhoto}
+              icon={<Ionicons name="image-outline" size={16} color={theme.text} />}
+              onPress={() => void handlePickPhoto()}
+              fullWidth
+            />
+          </View>
+          {avatarPath ? (
+            <View style={styles.flex1}>
+              <AppButton
+                label="Remove Photo"
+                variant="outline"
+                size="sm"
+                icon={<Ionicons name="trash-outline" size={16} color={theme.danger} />}
+                onPress={handleRemovePhoto}
+                fullWidth
+              />
+            </View>
+          ) : null}
         </View>
       </AppCard>
 
@@ -207,6 +244,11 @@ const styles = StyleSheet.create({
     borderRadius: 34,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
   },
   avatarInitials: {
     color: '#FFFFFF',
@@ -224,27 +266,12 @@ const styles = StyleSheet.create({
   localNote: {
     fontSize: 13,
   },
-  label: {
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: Spacing.one,
-  },
-  presetsRow: {
+  photoActionsRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.two + 2,
+    gap: Spacing.two,
   },
-  presetBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  presetInitials: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
+  flex1: {
+    flex: 1,
   },
   bioInput: {
     minHeight: 84,

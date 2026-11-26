@@ -84,8 +84,66 @@ export function getWeekRange(isoDate: string): { startDate: string; endDate: str
 
 export function addDaysToISODate(isoDate: string, deltaDays: number): string {
   const { year, month, day } = parseISODateParts(isoDate);
-  const date = new Date(year, month - 1, day + deltaDays);
-  return toISODate(date.getFullYear(), date.getMonth() + 1, date.getDate());
+  const utcMs = Date.UTC(year, month - 1, day + deltaDays);
+  const d = new Date(utcMs);
+  return toISODate(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+}
+
+/**
+ * Computes exact signed integer calendar day difference (endISO - startISO) without DST drift.
+ */
+export function diffDaysISODate(startISO: string, endISO: string): number {
+  const s = parseISODateParts(startISO);
+  const e = parseISODateParts(endISO);
+  const sMs = Date.UTC(s.year, s.month - 1, s.day);
+  const eMs = Date.UTC(e.year, e.month - 1, e.day);
+  return Math.round((eMs - sMs) / 86400000);
+}
+
+export interface BiweeklyPeriodRange {
+  anchorDate: string;
+  cycleIndex: number;
+  startDate: string;
+  endDate: string;
+  nextStartDate: string;
+  nextEndDate: string;
+}
+
+/**
+ * Returns the 14-day biweekly window for a specific cycleIndex relative to anchorISO.
+ * Each window covers [start, start + 13] inclusive (14 real calendar days).
+ */
+export function getBiweeklyPeriodRange(
+  anchorISO: string,
+  cycleIndex: number = 0,
+): BiweeklyPeriodRange {
+  const safeAnchor = isValidISODate(anchorISO) ? anchorISO : getTodayISODate();
+  const startDate = addDaysToISODate(safeAnchor, cycleIndex * 14);
+  const endDate = addDaysToISODate(startDate, 13);
+  const nextStartDate = addDaysToISODate(startDate, 14);
+  const nextEndDate = addDaysToISODate(nextStartDate, 13);
+  return {
+    anchorDate: safeAnchor,
+    cycleIndex,
+    startDate,
+    endDate,
+    nextStartDate,
+    nextEndDate,
+  };
+}
+
+/**
+ * Resolves the 14-day cycle anchored to anchorISO that contains referenceISO.
+ */
+export function getBiweeklyPeriodForDate(
+  anchorISO: string,
+  referenceISO: string = getTodayISODate(),
+): BiweeklyPeriodRange {
+  const safeAnchor = isValidISODate(anchorISO) ? anchorISO : getTodayISODate();
+  const safeRef = isValidISODate(referenceISO) ? referenceISO : safeAnchor;
+  const diff = diffDaysISODate(safeAnchor, safeRef);
+  const cycleIndex = Math.floor(diff / 14);
+  return getBiweeklyPeriodRange(safeAnchor, cycleIndex);
 }
 
 export function enumerateDatesInRange(startDate: string, endDate: string): string[] {

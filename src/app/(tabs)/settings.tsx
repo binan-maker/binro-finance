@@ -1,8 +1,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
+import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
 import {
   AppButton,
@@ -17,12 +18,13 @@ import {
 import { getCurrencyConfig } from '@/constants/currencies';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { resolveLocalImageUri } from '@/services/images/localImageStorage';
 import { useAppStore } from '@/store/app-store';
 import type { DateFormatPreference, ThemePreference } from '@/types/models';
 import { formatDateForDisplay, getTodayISODate } from '@/utils/date';
 import { formatMinorToMajorInput, formatMoney } from '@/utils/money';
+import { getProfileInitials, PROFILE_AVATAR_COLOR } from '@/utils/profile';
 import { validateNonNegativeAmountInput } from '@/utils/validation';
-import { getProfileInitials, parseAvatarPreset } from '@/app/profile/index';
 
 const THEME_OPTIONS: readonly SegmentOption<ThemePreference>[] = [
   { label: 'System', value: 'system' },
@@ -58,6 +60,7 @@ export default function SettingsScreen() {
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [savingBalance, setSavingBalance] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [failedAvatarUri, setFailedAvatarUri] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -76,7 +79,8 @@ export default function SettingsScreen() {
   const appVersion = Constants.expoConfig?.version ?? '1.0.0';
   const todayISO = getTodayISODate();
 
-  const avatarPreset = parseAvatarPreset(settings.profileAvatar);
+  const avatarImageUri = resolveLocalImageUri(settings.profileAvatar);
+  const showAvatarPhoto = Boolean(avatarImageUri && failedAvatarUri !== avatarImageUri);
   const profileInitials = getProfileInitials(settings.profileName);
 
   const openBalanceEditor = () => {
@@ -134,6 +138,15 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleToggleHomeBudgetShortcut = async (enabled: boolean) => {
+    setStatusError(null);
+    try {
+      await updateSettings({ showHomeBudgetShortcut: enabled });
+    } catch {
+      setStatusError('Unable to update Home budget shortcut preference.');
+    }
+  };
+
   return (
     <AppScreen>
       <AppHeader
@@ -160,10 +173,15 @@ export default function SettingsScreen() {
           <View
             style={[
               styles.profileAvatar,
-              { backgroundColor: avatarPreset.color },
+              { backgroundColor: PROFILE_AVATAR_COLOR },
             ]}>
-            {avatarPreset.icon ? (
-              <Ionicons name={avatarPreset.icon} size={22} color="#FFFFFF" />
+            {showAvatarPhoto && avatarImageUri ? (
+              <Image
+                source={{ uri: avatarImageUri }}
+                style={styles.profileAvatarImage}
+                contentFit="cover"
+                onError={() => setFailedAvatarUri(avatarImageUri)}
+              />
             ) : (
               <Text style={styles.profileInitials}>{profileInitials}</Text>
             )}
@@ -222,6 +240,29 @@ export default function SettingsScreen() {
           )}
           onPress={openBalanceEditor}
         />
+
+        <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+        <View style={styles.staticRow}>
+          <View style={styles.rowLeft}>
+            <Ionicons
+              name="pie-chart-outline"
+              size={20}
+              color={theme.textSecondary}
+            />
+            <Text style={[styles.rowTitle, { color: theme.text }]}>
+              Home Budget Shortcut
+            </Text>
+          </View>
+          <Switch
+            value={settings.showHomeBudgetShortcut}
+            onValueChange={(val) => void handleToggleHomeBudgetShortcut(val)}
+            trackColor={{ false: theme.border, true: theme.primarySoft }}
+            thumbColor={
+              settings.showHomeBudgetShortcut ? theme.primary : theme.textMuted
+            }
+          />
+        </View>
       </AppCard>
 
       <AppCard>
@@ -485,6 +526,11 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  profileAvatarImage: {
+    width: '100%',
+    height: '100%',
   },
   profileInitials: {
     color: '#FFFFFF',

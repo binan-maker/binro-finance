@@ -3,9 +3,6 @@ import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
   FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -18,6 +15,7 @@ import {
   AppHeader,
   AppInput,
   AppScreen,
+  BottomSheetModal,
   CategoryIcon,
 } from '@/components/common';
 import { Radius, Spacing } from '@/constants/theme';
@@ -185,84 +183,69 @@ export default function SelectPaymentMethodScreen() {
         }}
       />
 
-      <Modal
+      <BottomSheetModal
         visible={createVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setCreateVisible(false)}>
-        <KeyboardAvoidingView
-          style={styles.backdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          <Pressable
-            style={styles.backdropDismiss}
-            onPress={() => setCreateVisible(false)}
-          />
-          <View
-            style={[
-              styles.sheet,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>
-              New Payment Method
-            </Text>
+        onClose={() => setCreateVisible(false)}
+        keyboardAvoiding>
+        <Text style={[styles.modalTitle, { color: theme.text }]}>
+          New Payment Method
+        </Text>
 
-            <AppInput
-              label="Method Name"
-              value={nameInput}
-              onChangeText={(t) => {
-                setNameInput(t);
-                if (createError) setCreateError(null);
-              }}
-              placeholder="e.g. Apple Pay, Corporate Card"
-              maxLength={40}
-              error={createError}
+        <AppInput
+          label="Method Name"
+          value={nameInput}
+          onChangeText={(t) => {
+            setNameInput(t);
+            if (createError) setCreateError(null);
+          }}
+          placeholder="e.g. Apple Pay, Corporate Card"
+          maxLength={40}
+          error={createError}
+        />
+
+        <Text style={[styles.label, { color: theme.text }]}>Icon</Text>
+        <View style={styles.iconGrid}>
+          {PM_ICONS.map((iconKey) => {
+            const selected = iconInput === iconKey;
+            return (
+              <Pressable
+                key={iconKey}
+                onPress={() => setIconInput(iconKey)}
+                style={[
+                  styles.iconChoice,
+                  {
+                    borderColor: selected ? theme.primary : theme.border,
+                    backgroundColor: selected
+                      ? theme.primarySoft
+                      : theme.surfaceElevated,
+                  },
+                ]}>
+                <CategoryIcon icon={iconKey} color={theme.primary} size={32} />
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={styles.modalActions}>
+          <View style={styles.flex1}>
+            <AppButton
+              label="Cancel"
+              variant="outline"
+              onPress={() => setCreateVisible(false)}
+              disabled={saving}
+              fullWidth
             />
-
-            <Text style={[styles.label, { color: theme.text }]}>Icon</Text>
-            <View style={styles.iconGrid}>
-              {PM_ICONS.map((iconKey) => {
-                const selected = iconInput === iconKey;
-                return (
-                  <Pressable
-                    key={iconKey}
-                    onPress={() => setIconInput(iconKey)}
-                    style={[
-                      styles.iconChoice,
-                      {
-                        borderColor: selected ? theme.primary : theme.border,
-                        backgroundColor: selected
-                          ? theme.primarySoft
-                          : theme.surfaceElevated,
-                      },
-                    ]}>
-                    <CategoryIcon icon={iconKey} color={theme.primary} size={32} />
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <View style={styles.modalActions}>
-              <View style={styles.flex1}>
-                <AppButton
-                  label="Cancel"
-                  variant="outline"
-                  onPress={() => setCreateVisible(false)}
-                  disabled={saving}
-                  fullWidth
-                />
-              </View>
-              <View style={styles.flex1}>
-                <AppButton
-                  label="Save"
-                  onPress={() => void handleCreate()}
-                  loading={saving}
-                  fullWidth
-                />
-              </View>
-            </View>
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
+          <View style={styles.flex1}>
+            <AppButton
+              label="Save"
+              onPress={() => void handleCreate()}
+              loading={saving}
+              fullWidth
+            />
+          </View>
+        </View>
+      </BottomSheetModal>
     </AppScreen>
   );
 }
@@ -312,21 +295,6 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.78,
-  },
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'flex-end',
-  },
-  backdropDismiss: {
-    flex: 1,
-  },
-  sheet: {
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    borderWidth: 1,
-    padding: Spacing.four,
-    gap: Spacing.three,
   },
   modalTitle: {
     fontSize: 18,

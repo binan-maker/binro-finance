@@ -166,12 +166,17 @@ export default function ReportsScreen() {
     return total;
   }, [periodPreset, startDate, endDate, activeCurrencyCode, transactions, selectedCategoryId]);
 
+  const categoryMap = useMemo(
+    () => new Map(categories.map((c) => [c.id, c])),
+    [categories],
+  );
+
   const selectedCategory = useMemo(
     () =>
       selectedCategoryId
-        ? categories.find((c) => c.id === selectedCategoryId) ?? null
+        ? categoryMap.get(selectedCategoryId) ?? null
         : null,
-    [categories, selectedCategoryId],
+    [categoryMap, selectedCategoryId],
   );
 
   const orderedCategories = useMemo(
@@ -241,7 +246,10 @@ export default function ReportsScreen() {
               { backgroundColor: theme.primarySoft, borderColor: theme.border },
               pressed && styles.pressed,
             ]}>
-            <Ionicons name="pie-chart-outline" size={18} color={theme.primary} />
+            <Ionicons name="pie-chart-outline" size={16} color={theme.primary} />
+            <Text style={[styles.headerBadgeText, { color: theme.primary }]}>
+              Budgets
+            </Text>
           </Pressable>
         }
         rightAction={
@@ -529,6 +537,11 @@ export default function ReportsScreen() {
                       <CategoryIcon
                         icon={item.icon}
                         color={item.color}
+                        imageUri={
+                          item.categoryId
+                            ? categoryMap.get(item.categoryId)?.imageUri
+                            : undefined
+                        }
                         size={34}
                       />
                       <View style={styles.rankedNameWrap}>
@@ -734,7 +747,12 @@ export default function ReportsScreen() {
                   },
                 ]}>
                 <View style={styles.catOptionLeft}>
-                  <CategoryIcon icon={cat.icon} color={cat.color} size={30} />
+                  <CategoryIcon
+                    icon={cat.icon}
+                    color={cat.color}
+                    imageUri={cat.imageUri}
+                    size={30}
+                  />
                   <Text
                     style={[
                       styles.catOptionText,
@@ -781,12 +799,18 @@ function InsightRow({
 
 const styles = StyleSheet.create({
   headerBadge: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    height: 36,
+    paddingHorizontal: Spacing.two + 2,
+    borderRadius: Radius.full,
     borderWidth: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 5,
+  },
+  headerBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   headerIconBtn: {
     width: 38,

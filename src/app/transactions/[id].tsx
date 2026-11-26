@@ -1,10 +1,10 @@
-import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
+  AppButton,
   AppCard,
   AppHeader,
   AppScreen,
@@ -28,8 +28,6 @@ import { formatMoney } from '@/utils/money';
 export default function TransactionDetailsScreen() {
   const theme = useTheme();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const settings = useAppStore((s) => s.settings);
@@ -47,7 +45,6 @@ export default function TransactionDetailsScreen() {
   const [fetchedTx, setFetchedTx] = useState<Transaction | null>(null);
   const [loading, setLoading] = useState(!txFromStore && Boolean(id));
   const [isEditing, setIsEditing] = useState(false);
-  const [menuVisible, setMenuVisible] = useState(false);
   const [deleteDialogVisible, setDeleteDialogVisible] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -192,29 +189,35 @@ export default function TransactionDetailsScreen() {
   }
 
   return (
-    <AppScreen edges={['top', 'bottom', 'left', 'right']}>
-      <AppHeader
-        title="Transaction Details"
-        showBack
-        rightAction={
-          <Pressable
-            onPress={() => setMenuVisible(true)}
-            accessibilityRole="button"
-            accessibilityLabel="More actions"
-            style={[
-              styles.overflowBtn,
-              { backgroundColor: theme.surface, borderColor: theme.border },
-            ]}>
-            <Ionicons name="ellipsis-vertical" size={18} color={theme.text} />
-          </Pressable>
-        }
-      />
+    <AppScreen
+      edges={['top', 'bottom', 'left', 'right']}
+      footer={
+        <View style={styles.footerActions}>
+          <View style={styles.footerBtnWrap}>
+            <AppButton
+              label="Edit Transaction"
+              onPress={() => setIsEditing(true)}
+              fullWidth
+            />
+          </View>
+          <View style={styles.footerBtnWrap}>
+            <AppButton
+              label="Delete Transaction"
+              variant="danger"
+              onPress={() => setDeleteDialogVisible(true)}
+              fullWidth
+            />
+          </View>
+        </View>
+      }>
+      <AppHeader title="Transaction Details" showBack />
 
       <AppCard>
         <View style={styles.heroTop}>
           <CategoryIcon
             icon={category?.icon}
             color={category?.color}
+            imageUri={category?.imageUri}
             size={48}
           />
           <View
@@ -316,55 +319,6 @@ export default function TransactionDetailsScreen() {
         </Text>
       ) : null}
 
-      {/* Text-Only Overflow Action Menu */}
-      <Modal
-        visible={menuVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setMenuVisible(false)}>
-        <Pressable
-          style={[
-            styles.menuBackdrop,
-            {
-              paddingTop: insets.top + 56,
-              paddingRight: Math.max(insets.right, Spacing.three),
-            },
-          ]}
-          onPress={() => setMenuVisible(false)}>
-          <View
-            style={[
-              styles.menuCard,
-              {
-                width: Math.min(180, width * 0.55),
-                backgroundColor: theme.surface,
-                borderColor: theme.border,
-              },
-            ]}>
-            <Pressable
-              onPress={() => {
-                setMenuVisible(false);
-                setIsEditing(true);
-              }}
-              accessibilityRole="button"
-              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}>
-              <Text style={[styles.menuItemText, { color: theme.text }]}>Edit</Text>
-            </Pressable>
-
-            <View style={[styles.divider, { backgroundColor: theme.border }]} />
-
-            <Pressable
-              onPress={() => {
-                setMenuVisible(false);
-                setDeleteDialogVisible(true);
-              }}
-              accessibilityRole="button"
-              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}>
-              <Text style={[styles.menuItemText, { color: theme.danger }]}>Delete</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
-
       <ConfirmDialog
         visible={deleteDialogVisible}
         title="Delete Transaction?"
@@ -399,14 +353,6 @@ const styles = StyleSheet.create({
   editHeaderWrap: {
     paddingHorizontal: Spacing.three,
     paddingTop: Spacing.two,
-  },
-  overflowBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   heroTop: {
     flexDirection: 'row',
@@ -489,25 +435,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  menuBackdrop: {
+  footerActions: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  footerBtnWrap: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    alignItems: 'flex-end',
-  },
-  menuCard: {
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  menuItem: {
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.three - 2,
-  },
-  menuItemPressed: {
-    opacity: 0.72,
-  },
-  menuItemText: {
-    fontSize: 15,
-    fontWeight: '600',
   },
 });

@@ -20,7 +20,6 @@ import {
   SegmentedControl,
   type SegmentOption,
 } from '@/components/common';
-import { TAG_COLOR_OPTIONS } from '@/constants/categories';
 import { getCurrencyConfig, type CurrencyConfig } from '@/constants/currencies';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -34,10 +33,11 @@ import type {
 } from '@/types/models';
 import { getTodayISODate, isValidISODate } from '@/utils/date';
 import { formatMinorToMajorInput, parseMajorToMinor } from '@/utils/money';
-import { validateTagName, validateTransactionInput } from '@/utils/validation';
+import { validateTransactionInput } from '@/utils/validation';
 
 import { CategoryPickerModal } from './CategoryPickerModal';
 import { DatePickerField } from './DatePickerField';
+import { TagSelectionModal } from './TagSelectionModal';
 
 export interface TransactionFormValues {
   type: TransactionType;
@@ -160,13 +160,7 @@ export function TransactionForm({
   const [submitting, setSubmitting] = useState(false);
 
   const [categoryModalVisible, setCategoryModalVisible] = useState(false);
-
-  // Inline tag creation state (hidden until user explicitly taps "+ Add Tag")
-  const [showInlineTagCreate, setShowInlineTagCreate] = useState(false);
-  const [newTagName, setNewTagName] = useState('');
-  const [newTagColor, setNewTagColor] = useState<string>(TAG_COLOR_OPTIONS[0]);
-  const [tagCreateError, setTagCreateError] = useState<string | null>(null);
-  const [creatingTag, setCreatingTag] = useState(false);
+  const [tagModalVisible, setTagModalVisible] = useState(false);
 
   // Reflect draft mutations from dedicated full-screen pickers (/currency & /payment-methods/select)
   const effectiveCurrencyCode =
@@ -224,6 +218,11 @@ export function TransactionForm({
   const displayTags = useMemo(
     () => tags.filter((t) => !t.isArchived || selectedTagIds.includes(t.id)),
     [tags, selectedTagIds],
+  );
+
+  const selectedTags = useMemo(
+    () => displayTags.filter((t) => selectedTagIds.includes(t.id)),
+    [displayTags, selectedTagIds],
   );
 
   const buildDraftSnapshot = (
@@ -285,36 +284,12 @@ export function TransactionForm({
     syncDraftPatch({ tagIds: next });
   };
 
-  const handleCreateInlineTag = async () => {
-    if (creatingTag) return;
-    setTagCreateError(null);
-    const validation = validateTagName(newTagName);
-    if (!validation.valid || !validation.value) {
-      setTagCreateError(validation.error ?? 'Invalid tag name.');
-      return;
-    }
-
-    setCreatingTag(true);
-    try {
-      const created = await onCreateTag({
-        name: validation.value,
-        color: newTagColor,
-      });
-      const nextIds = selectedTagIds.includes(created.id)
-        ? selectedTagIds
-        : [...selectedTagIds, created.id];
-      setSelectedTagIds(nextIds);
-      syncDraftPatch({ tagIds: nextIds });
-      setNewTagName('');
-      setNewTagColor(TAG_COLOR_OPTIONS[0]);
-      setShowInlineTagCreate(false);
-    } catch (error) {
-      setTagCreateError(
-        error instanceof Error ? error.message : 'Unable to create tag.',
-      );
-    } finally {
-      setCreatingTag(false);
-    }
+  const handleAutoSelectTag = (tagId: string) => {
+    const next = selectedTagIds.includes(tagId)
+      ? selectedTagIds
+      : [...selectedTagIds, tagId];
+    setSelectedTagIds(next);
+    syncDraftPatch({ tagIds: next });
   };
 
   const handleNext = () => {
@@ -558,6 +533,7 @@ export function TransactionForm({
                       <CategoryIcon
                         icon={effectiveCategory.icon}
                         color={effectiveCategory.color}
+                        imageUri={effectiveCategory.imageUri}
                         size={30}
                       />
                       <Text style={[styles.selectorValue, { color: theme.text }]}>
@@ -573,155 +549,62 @@ export function TransactionForm({
                 </Pressable>
               </View>
 
-              {/* Inline Tags selection */}
+              {/* Compact Tags selector opening TagSelectionModal */}
               <View style={styles.selectorField}>
                 <Text style={[styles.fieldLabel, { color: theme.text }]}>
                   Tags (Optional)
                 </Text>
 
-                <View style={styles.inlineTagsWrap}>
-                  {displayTags.map((tag) => {
-                    const selected = selectedTagIds.includes(tag.id);
-                    return (
-                      <Pressable
+                <Pressable
+                  onPress={() => setTagModalVisible(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Select tags"
+                  style={[
+                    styles.selectorButton,
+                    { backgroundColor: theme.surface, borderColor: theme.border },
+                  ]}>
+                  <View style={styles.inlineTagsWrap}>
+                    {selectedTags.map((tag) => (
+                      <View
                         key={tag.id}
-                        onPress={() => handleToggleTag(tag.id)}
-                        accessibilityRole="button"
-                        accessibilityState={{ selected }}
-                        style={({ pressed }) => [
+                        style={[
                           styles.inlineTagPill,
                           {
-                            backgroundColor: selected ? theme.primary : theme.surface,
-                            borderColor: selected ? theme.primary : theme.border,
+                            backgroundColor: theme.primary,
+                            borderColor: theme.primary,
                           },
-                          pressed && styles.pressed,
                         ]}>
                         <View
                           style={[
                             styles.tagDot,
-                            {
-                              backgroundColor: selected
-                                ? theme.primaryText
-                                : tag.color,
-                            },
+                            { backgroundColor: theme.primaryText },
                           ]}
                         />
                         <Text
                           style={[
                             styles.inlineTagText,
-                            { color: selected ? theme.primaryText : theme.text },
+                            { color: theme.primaryText },
                           ]}>
                           {tag.name}
                         </Text>
-                      </Pressable>
-                    );
-                  })}
-
-                  {!showInlineTagCreate ? (
-                    <Pressable
-                      onPress={() => {
-                        setTagCreateError(null);
-                        setShowInlineTagCreate(true);
-                      }}
-                      accessibilityRole="button"
-                      style={({ pressed }) => [
+                      </View>
+                    ))}
+                    <View
+                      style={[
                         styles.addTagPill,
                         {
                           backgroundColor: theme.surfaceElevated,
                           borderColor: theme.border,
                         },
-                        pressed && styles.pressed,
                       ]}>
-                      <Ionicons name="add" size={15} color={theme.primary} />
+                      <Ionicons name="add" size={14} color={theme.primary} />
                       <Text style={[styles.addTagText, { color: theme.primary }]}>
-                        Add Tag
+                        Add
                       </Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-
-                {showInlineTagCreate ? (
-                  <View
-                    style={[
-                      styles.inlineCreateCard,
-                      {
-                        backgroundColor: theme.surfaceElevated,
-                        borderColor: theme.border,
-                      },
-                    ]}>
-                    <TextInput
-                      value={newTagName}
-                      onChangeText={(text) => {
-                        setNewTagName(text);
-                        if (tagCreateError) setTagCreateError(null);
-                      }}
-                      placeholder="Tag name"
-                      placeholderTextColor={theme.textMuted}
-                      maxLength={28}
-                      autoFocus
-                      style={[
-                        styles.inlineTagInput,
-                        {
-                          color: theme.text,
-                          backgroundColor: theme.surface,
-                          borderColor: theme.border,
-                        },
-                      ]}
-                    />
-
-                    <View style={styles.swatchRow}>
-                      {TAG_COLOR_OPTIONS.map((swatch) => {
-                        const selected = newTagColor === swatch;
-                        return (
-                          <Pressable
-                            key={swatch}
-                            onPress={() => setNewTagColor(swatch)}
-                            style={[
-                              styles.colorSwatch,
-                              {
-                                backgroundColor: swatch,
-                                borderWidth: selected ? 2.5 : 0,
-                                borderColor: theme.text,
-                              },
-                            ]}
-                          />
-                        );
-                      })}
-                    </View>
-
-                    {tagCreateError ? (
-                      <Text style={[styles.tagErrorText, { color: theme.danger }]}>
-                        {tagCreateError}
-                      </Text>
-                    ) : null}
-
-                    <View style={styles.inlineCreateActions}>
-                      <View style={styles.flex}>
-                        <AppButton
-                          label="Cancel"
-                          size="sm"
-                          variant="outline"
-                          onPress={() => {
-                            setShowInlineTagCreate(false);
-                            setNewTagName('');
-                            setTagCreateError(null);
-                          }}
-                          disabled={creatingTag}
-                          fullWidth
-                        />
-                      </View>
-                      <View style={styles.flex}>
-                        <AppButton
-                          label="Create"
-                          size="sm"
-                          onPress={() => void handleCreateInlineTag()}
-                          loading={creatingTag}
-                          fullWidth
-                        />
-                      </View>
                     </View>
                   </View>
-                ) : null}
+                  <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
+                </Pressable>
               </View>
 
               {/* Currency selector */}
@@ -827,6 +710,16 @@ export function TransactionForm({
           syncDraftPatch({ categoryId: cat.id });
         }}
         onClose={() => setCategoryModalVisible(false)}
+      />
+
+      <TagSelectionModal
+        visible={tagModalVisible}
+        tags={displayTags}
+        selectedTagIds={selectedTagIds}
+        onToggleTag={handleToggleTag}
+        onCreateTag={onCreateTag}
+        onAutoSelectTag={handleAutoSelectTag}
+        onClose={() => setTagModalVisible(false)}
       />
     </KeyboardAvoidingView>
   );
@@ -959,77 +852,44 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   inlineTagsWrap: {
+    flex: 1,
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: Spacing.two,
+    gap: Spacing.one + 2,
+    alignItems: 'center',
   },
   inlineTagPill: {
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    gap: 6,
-    paddingHorizontal: Spacing.three - 2,
-    paddingVertical: Spacing.one + 3,
+    gap: 5,
+    paddingHorizontal: Spacing.two + 2,
+    paddingVertical: 4,
     borderRadius: Radius.full,
     borderWidth: 1,
   },
   inlineTagText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
   },
   addTagPill: {
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    gap: 4,
-    paddingHorizontal: Spacing.three - 2,
-    paddingVertical: Spacing.one + 3,
+    gap: 3,
+    paddingHorizontal: Spacing.two + 2,
+    paddingVertical: 4,
     borderRadius: Radius.full,
     borderWidth: 1,
   },
   addTagText: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  tagDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  inlineCreateCard: {
-    padding: Spacing.three - 2,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    gap: Spacing.two,
-    marginTop: Spacing.one,
-  },
-  inlineTagInput: {
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    paddingHorizontal: Spacing.three - 2,
-    paddingVertical: Spacing.two,
-    fontSize: 14,
-  },
-  swatchRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.two,
-  },
-  colorSwatch: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-  },
-  tagErrorText: {
     fontSize: 12,
     fontWeight: '600',
   },
-  inlineCreateActions: {
-    flexDirection: 'row',
-    gap: Spacing.two,
-  },
-  pressed: {
-    opacity: 0.78,
+  tagDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
   },
   errorText: {
     fontSize: 13,

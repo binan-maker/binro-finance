@@ -50,6 +50,7 @@ export function mapCategoryRow(row: CategoryRow): Category {
     parentId: row.parent_id ?? null,
     icon: row.icon ?? 'tag',
     color: row.color ?? '#059669',
+    imageUri: row.image_uri?.trim() || null,
     isDefault: row.is_default === 1,
     isArchived: row.is_archived === 1,
     createdAt: row.created_at,
@@ -100,6 +101,7 @@ export function mapBudgetRow(
     period: row.period,
     month: row.month,
     year: row.year,
+    startDate: row.start_date?.trim() || null,
     categoryId: row.category_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -121,6 +123,7 @@ export function mapSettingsRow(row: AppSettingsRow): AppSettings {
     profileBio: row.profile_bio ?? null,
     profileAvatar: row.profile_avatar ?? null,
     currencyInitialized: row.currency_initialized === 1,
+    showHomeBudgetShortcut: row.show_home_budget_shortcut === 1,
   };
 }
 
