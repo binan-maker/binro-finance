@@ -8,12 +8,20 @@ import type {
   Category,
   CategoryType,
   DateFormatPreference,
+  EntitlementStatus,
+  EntitlementTier,
+  GenderOption,
   NotificationType,
   PaymentMethodRecord,
+  SyncEntityType,
+  SyncOperationType,
+  SyncStateSnapshot,
+  SyncStatus,
   Tag,
   ThemePreference,
   Transaction,
   TransactionType,
+  UserEntitlement,
 } from './models';
 
 export interface TransactionRow {
@@ -28,6 +36,7 @@ export interface TransactionRow {
   payment_method: string | null;
   transaction_date: string;
   note: string | null;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -42,6 +51,7 @@ export interface CategoryRow {
   image_uri?: string | null;
   is_default: number | null;
   is_archived: number | null;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -51,6 +61,7 @@ export interface TagRow {
   name: string;
   color: string | null;
   is_archived?: number | null;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -58,14 +69,18 @@ export interface TagRow {
 export interface TransactionTagRow {
   transaction_id: string;
   tag_id: string;
+  deleted_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface PaymentMethodRow {
   id: string;
   name: string;
   icon: string | null;
+  image_uri?: string | null;
   is_builtin: number | null;
   is_archived: number | null;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -87,6 +102,7 @@ export interface BudgetRow {
   year: number;
   start_date?: string | null;
   category_id: string | null;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -104,6 +120,13 @@ export interface AppSettingsRow {
   profile_avatar?: string | null;
   currency_initialized?: number | null;
   show_home_budget_shortcut?: number | null;
+  gender?: GenderOption | null;
+  date_of_birth?: string | null;
+  google_name?: string | null;
+  google_email?: string | null;
+  google_avatar_url?: string | null;
+  profile_completed_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface NotificationRow {
@@ -114,6 +137,54 @@ export interface NotificationRow {
   is_read: number;
   metadata_json: string | null;
   created_at: string;
+}
+
+export interface SyncStateRow {
+  id: number;
+  linked_user_id: string | null;
+  linked_user_email: string | null;
+  migration_completed_at: string | null;
+  last_synced_at: string | null;
+  last_error: string | null;
+  sync_status: SyncStatus;
+  cursors_json: string | null;
+  anonymous_install_id: string | null;
+}
+
+export interface SyncOutboxRow {
+  id: string;
+  workspace_user_id: string | null;
+  entity_type: SyncEntityType;
+  entity_id: string;
+  operation: SyncOperationType;
+  payload_json: string | null;
+  local_updated_at: string;
+  retry_count: number;
+  next_retry_at: string | null;
+  last_error: string | null;
+  status: 'pending' | 'processing' | 'failed';
+  created_at: string;
+}
+
+export interface MediaSyncMapRow {
+  local_path: string;
+  entity_type: 'profile' | 'category' | 'payment_method';
+  entity_id: string;
+  remote_path: string | null;
+  user_id: string | null;
+  content_hash: string | null;
+  sync_state: 'pending_upload' | 'synced' | 'pending_delete';
+  updated_at: string;
+}
+
+export interface EntitlementCacheRow {
+  id: number;
+  user_id: string | null;
+  tier: EntitlementTier;
+  status: EntitlementStatus;
+  expires_at: string | null;
+  source: string;
+  updated_at: string | null;
 }
 
 export interface CreateTransactionInput {
@@ -196,12 +267,14 @@ export interface CreatePaymentMethodInput {
   id?: string;
   name: string;
   icon?: string;
+  imageUri?: string | null;
   isBuiltin?: boolean;
 }
 
 export interface UpdatePaymentMethodInput {
   name?: string;
   icon?: string;
+  imageUri?: string | null;
   isArchived?: boolean;
 }
 
@@ -228,6 +301,12 @@ export interface UpdateSettingsInput {
   profileAvatar?: string | null;
   currencyInitialized?: boolean;
   showHomeBudgetShortcut?: boolean;
+  gender?: GenderOption | null;
+  dateOfBirth?: string | null;
+  googleName?: string | null;
+  googleEmail?: string | null;
+  googleAvatarUrl?: string | null;
+  profileCompletedAt?: string | null;
 }
 
 export interface CreateNotificationInput {
@@ -333,4 +412,17 @@ export interface IBackupRepository {
   exportAll(appVersion: string): Promise<BackupPayload>;
   restoreFromBackup(payload: BackupPayload, mode: 'merge' | 'replace'): Promise<RestoreResult>;
   clearAllData(): Promise<void>;
+}
+
+export interface ISyncRepository {
+  getSyncState(): Promise<SyncStateSnapshot>;
+  updateSyncState(patch: Partial<SyncStateSnapshot>): Promise<SyncStateSnapshot>;
+  getPendingOutbox(userId: string, limit?: number): Promise<SyncOutboxRow[]>;
+  getPendingOutboxCount(userId?: string | null): Promise<number>;
+  markOutboxFailed(id: string, error: string, nextRetryAt: string): Promise<void>;
+  removeOutboxItems(ids: readonly string[]): Promise<void>;
+  clearOutboxForOtherUser(activeUserId: string): Promise<void>;
+  getEntitlementCache(): Promise<UserEntitlement>;
+  saveEntitlementCache(entitlement: UserEntitlement): Promise<void>;
+  hasUserFinancialData(): Promise<boolean>;
 }

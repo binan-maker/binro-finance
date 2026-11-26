@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   AppButton,
@@ -11,7 +11,7 @@ import {
   AppInput,
   AppScreen,
 } from '@/components/common';
-import { Spacing } from '@/constants/theme';
+import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
   deleteStoredImage,
@@ -19,19 +19,34 @@ import {
   resolveLocalImageUri,
 } from '@/services/images/localImageStorage';
 import { useAppStore } from '@/store/app-store';
+import type { GenderOption } from '@/types/models';
+import { isValidISODate } from '@/utils/date';
 import { getProfileInitials, PROFILE_AVATAR_COLOR } from '@/utils/profile';
 
 export { getProfileInitials } from '@/utils/profile';
+
+const GENDER_OPTIONS: readonly { label: string; value: GenderOption }[] = [
+  { label: 'Prefer not to say', value: 'prefer_not_to_say' },
+  { label: 'Female', value: 'female' },
+  { label: 'Male', value: 'male' },
+  { label: 'Non-binary', value: 'non_binary' },
+  { label: 'Other', value: 'other' },
+];
 
 export default function ProfileScreen() {
   const theme = useTheme();
   const router = useRouter();
 
   const settings = useAppStore((s) => s.settings);
+  const authUser = useAppStore((s) => s.authUser);
   const updateSettings = useAppStore((s) => s.updateSettings);
 
-  const [displayName, setDisplayName] = useState(settings.profileName ?? '');
+  const [displayName, setDisplayName] = useState(
+    settings.profileName ?? settings.googleName ?? '',
+  );
   const [bio, setBio] = useState(settings.profileBio ?? '');
+  const [gender, setGender] = useState<GenderOption | null>(settings.gender ?? null);
+  const [dateOfBirth, setDateOfBirth] = useState(settings.dateOfBirth ?? '');
   const [avatarPath, setAvatarPath] = useState<string | null>(() =>
     resolveLocalImageUri(settings.profileAvatar) ? settings.profileAvatar : null,
   );
@@ -51,11 +66,15 @@ export default function ProfileScreen() {
     };
   }, []);
 
-  const initials = getProfileInitials(displayName);
-  const resolvedAvatarUri = resolveLocalImageUri(avatarPath);
+  const customAvatarUri = resolveLocalImageUri(avatarPath);
+  const googleFallbackUri = resolveLocalImageUri(
+    authUser?.googleAvatarUrl ?? settings.googleAvatarUrl,
+  );
+  const resolvedAvatarUri = customAvatarUri ?? googleFallbackUri;
   const showPhoto = Boolean(
     resolvedAvatarUri && failedAvatarUri !== resolvedAvatarUri,
   );
+  const initials = getProfileInitials(displayName || settings.googleEmail);
 
   const handlePickPhoto = async () => {
     if (pickingPhoto || saving) return;
@@ -94,10 +113,23 @@ export default function ProfileScreen() {
 
   const handleSave = async () => {
     if (saving) return;
-    setSaving(true);
     setErrorMsg(null);
     setSavedNotice(false);
 
+    const trimmedDob = dateOfBirth.trim();
+    if (trimmedDob) {
+      if (!isValidISODate(trimmedDob)) {
+        setErrorMsg('Enter Date of Birth in YYYY-MM-DD format (e.g. 1998-05-14).');
+        return;
+      }
+      const parsed = new Date(`${trimmedDob}T00:00:00Z`);
+      if (parsed.getTime() > Date.now() || parsed.getUTCFullYear() < 1900) {
+        setErrorMsg('Please enter a valid Date of Birth.');
+        return;
+      }
+    }
+
+    setSaving(true);
     const previousSavedAvatar = settings.profileAvatar;
 
     try {
@@ -105,6 +137,9 @@ export default function ProfileScreen() {
         profileName: displayName.trim() || null,
         profileBio: bio.trim() || null,
         profileAvatar: avatarPath,
+        gender,
+        dateOfBirth: trimmedDob || null,
+        profileCompletedAt: settings.profileCompletedAt ?? new Date().toISOString(),
       });
 
       if (previousSavedAvatar && previousSavedAvatar !== avatarPath) {
@@ -122,6 +157,8 @@ export default function ProfileScreen() {
       setSaving(false);
     }
   };
+
+  const linkedEmail = authUser?.email ?? settings.googleEmail;
 
   return (
     <AppScreen
@@ -160,16 +197,22 @@ export default function ProfileScreen() {
             <Text style={[styles.avatarName, { color: theme.text }]} numberOfLines={1}>
               {displayName.trim() || 'Local Profile'}
             </Text>
-            <Text style={[styles.localNote, { color: theme.textSecondary }]}>
-              Stored locally on this device
+            <Text style={[styles.localNote, { color: theme.textSecondary }]} numberOfLines={1}>
+              {linkedEmail || 'Stored locally on this device'}
             </Text>
           </View>
         </View>
 
+        {!customAvatarUri && googleFallbackUri ? (
+          <Text style={[styles.fallbackHint, { color: theme.textMuted }]}>
+            Using your Google photo by default. Upload a photo anytime to customize it.
+          </Text>
+        ) : null}
+
         <View style={styles.photoActionsRow}>
           <View style={styles.flex1}>
             <AppButton
-              label={showPhoto ? 'Replace Photo' : 'Upload Photo'}
+              label={customAvatarUri ? 'Replace Photo' : 'Upload Photo'}
               variant="outline"
               size="sm"
               loading={pickingPhoto}
@@ -220,6 +263,58 @@ export default function ProfileScreen() {
           numberOfLines={3}
           style={styles.bioInput}
         />
+
+        <View style={styles.fieldGroup}>
+          <Text style={[styles.fieldLabel, { color: theme.text }]}>
+            Gender (Optional)
+          </Text>
+          <View style={styles.chipWrap}>
+            {GENDER_OPTIONS.map((opt) => {
+              const selected = gender === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => {
+                    setGender(selected ? null : opt.value);
+                    setSavedNotice(false);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: selected
+                        ? theme.primarySoft
+                        : theme.surfaceElevated,
+                      borderColor: selected ? theme.primary : theme.border,
+                    },
+                  ]}>
+                  <Text
+                    style={[
+                      styles.chipText,
+                      { color: selected ? theme.primary : theme.text },
+                    ]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <AppInput
+          label="Date of Birth (Optional)"
+          value={dateOfBirth}
+          onChangeText={(text) => {
+            setDateOfBirth(text);
+            setSavedNotice(false);
+            if (errorMsg) setErrorMsg(null);
+          }}
+          placeholder="YYYY-MM-DD"
+          maxLength={10}
+          keyboardType="numbers-and-punctuation"
+          helperText="Format: YYYY-MM-DD (e.g. 1998-05-14)"
+        />
       </AppCard>
 
       {errorMsg ? (
@@ -266,6 +361,10 @@ const styles = StyleSheet.create({
   localNote: {
     fontSize: 13,
   },
+  fallbackHint: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
   photoActionsRow: {
     flexDirection: 'row',
     gap: Spacing.two,
@@ -276,6 +375,28 @@ const styles = StyleSheet.create({
   bioInput: {
     minHeight: 84,
     textAlignVertical: 'top',
+  },
+  fieldGroup: {
+    gap: Spacing.two,
+  },
+  fieldLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  chipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
+  chip: {
+    paddingHorizontal: Spacing.three - 2,
+    paddingVertical: Spacing.one + 3,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  chipText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   errorText: {
     fontSize: 13,

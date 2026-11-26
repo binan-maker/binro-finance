@@ -1,309 +1,271 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { AppButton, AppCard, AppInput, AppScreen } from '@/components/common';
-import {
-  DEFAULT_CURRENCY_CODE,
-  getCurrencyConfig,
-} from '@/constants/currencies';
+import { AppButton, AppCard, AppScreen } from '@/components/common';
+import { DEFAULT_CURRENCY_CODE, getCurrencyConfig } from '@/constants/currencies';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { isGoogleSignInConfigured, isSupabaseConfigured } from '@/services/supabase/config';
 import { useAppStore } from '@/store/app-store';
-import { validateNonNegativeAmountInput } from '@/utils/validation';
-
-const FEATURED_CODES = ['INR', 'USD', 'EUR', 'GBP', 'JPY', 'AED'];
 
 export default function OnboardingScreen() {
   const theme = useTheme();
   const router = useRouter();
+
   const settings = useAppStore((s) => s.settings);
   const currencies = useAppStore((s) => s.currencies);
   const onboardingCurrencyCode = useAppStore((s) => s.onboardingCurrencyCode);
   const setOnboardingCurrencyCode = useAppStore((s) => s.setOnboardingCurrencyCode);
   const completeOnboarding = useAppStore((s) => s.completeOnboarding);
+  const signInWithGoogle = useAppStore((s) => s.signInWithGoogle);
+  const authBusy = useAppStore((s) => s.authBusy);
 
-  const currencyCode = onboardingCurrencyCode || settings.currencyCode || DEFAULT_CURRENCY_CODE;
-  const [openingBalanceText, setOpeningBalanceText] = useState('');
-  const [amountError, setAmountError] = useState<string | null>(null);
+  const currencyCode =
+    onboardingCurrencyCode || settings.currencyCode || DEFAULT_CURRENCY_CODE;
+  const selectedCurrency = getCurrencyConfig(currencyCode, currencies);
+  const cloudConfigured = isSupabaseConfigured() && isGoogleSignInConfigured();
+
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const selectedCurrency = getCurrencyConfig(currencyCode, currencies);
-
-  const featuredCurrencies = useMemo(() => {
-    const base = FEATURED_CODES.map((code) => getCurrencyConfig(code, currencies));
-    if (!FEATURED_CODES.includes(selectedCurrency.code)) {
-      return [selectedCurrency, ...base.slice(0, 5)];
-    }
-    return base;
-  }, [currencies, selectedCurrency]);
-
-  const handleContinue = async () => {
-    if (submitting) return;
-    setAmountError(null);
+  const handleGetStarted = async () => {
+    if (submitting || authBusy) return;
     setSubmitError(null);
-
-    const validation = validateNonNegativeAmountInput(
-      openingBalanceText,
-      currencyCode,
-      currencies,
-    );
-    if (!validation.valid || validation.value === undefined) {
-      setAmountError(validation.error ?? 'Enter a valid opening balance.');
-      return;
-    }
-
     setSubmitting(true);
     try {
       await completeOnboarding({
         currencyCode,
-        openingBalanceMinor: validation.value,
+        openingBalanceMinor: 0,
       });
       router.replace('/(tabs)');
     } catch {
-      setSubmitError('Could not save your setup. Please try again.');
+      setSubmitError('Could not finish setup. Please try again.');
     } finally {
       setSubmitting(false);
     }
   };
 
+  const handleContinueWithGoogle = async () => {
+    if (submitting || authBusy) return;
+    setSubmitError(null);
+
+    const result = await signInWithGoogle();
+    if (result.status === 'cancelled') {
+      return;
+    }
+    if (result.status === 'error') {
+      setSubmitError(result.message);
+      return;
+    }
+
+    const latestState = useAppStore.getState();
+    if (latestState.accountSwitchConflict) {
+      return;
+    }
+
+    if (!latestState.settings.onboardingCompleted) {
+      try {
+        await completeOnboarding({
+          currencyCode,
+          openingBalanceMinor: 0,
+        });
+      } catch {
+        setSubmitError('Signed in, but could not complete setup. Please try again.');
+        return;
+      }
+    }
+
+    const afterOnboarding = useAppStore.getState();
+    if (!afterOnboarding.settings.profileCompletedAt) {
+      router.replace('/profile/complete');
+    } else {
+      router.replace('/(tabs)');
+    }
+  };
+
+  const busy = submitting || authBusy;
+
   return (
     <AppScreen
-      keyboardAvoiding
       edges={['top', 'bottom', 'left', 'right']}
+      contentContainerStyle={styles.screenContent}
       footer={
         <View style={styles.footerWrap}>
           {submitError ? (
-            <Text style={[styles.submitError, { color: theme.danger }]}>{submitError}</Text>
+            <Text style={[styles.submitError, { color: theme.danger }]}>
+              {submitError}
+            </Text>
           ) : null}
+
           <AppButton
-            label="Continue to Dashboard"
-            onPress={() => void handleContinue()}
+            label="Get started"
+            onPress={() => void handleGetStarted()}
             loading={submitting}
+            disabled={busy}
             size="lg"
             fullWidth
           />
+
+          <AppButton
+            label="Continue with Google"
+            variant="outline"
+            icon={<Ionicons name="logo-google" size={18} color={theme.text} />}
+            onPress={() => void handleContinueWithGoogle()}
+            loading={authBusy}
+            disabled={busy}
+            size="lg"
+            fullWidth
+          />
+
+          {!cloudConfigured ? (
+            <Text style={[styles.configHint, { color: theme.textMuted }]}>
+              Local mode works immediately. Add Supabase & Google keys in .env to enable cloud sync.
+            </Text>
+          ) : null}
         </View>
       }>
-      <View style={styles.hero}>
-        <View style={[styles.badge, { backgroundColor: theme.primarySoft }]}>
-          <Ionicons name="wallet" size={28} color={theme.primary} />
+      <View style={styles.topBrand}>
+        <View style={[styles.brandBadge, { backgroundColor: theme.primarySoft }]}>
+          <Ionicons name="wallet" size={26} color={theme.primary} />
         </View>
-        <Text style={[styles.title, { color: theme.text }]}>
-          Welcome to BinRo Finance
+        <Text style={[styles.brandWordmark, { color: theme.text }]}>
+          BinRo Finance
         </Text>
         <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
-          Track your income, expenses, tags, and multi-currency activity privately on your device. No account or internet connection required.
+          Track your income, spending, and budgets privately on your device, with optional Google cloud backup.
         </Text>
       </View>
 
-      <AppCard>
-        <View style={styles.sectionHeaderRow}>
+      <AppCard style={styles.currencyCard}>
+        <View style={styles.currencyCardTop}>
           <View style={styles.flex1}>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>
-              1. Select Default Currency
+            <Text style={[styles.currencyLabel, { color: theme.textSecondary }]}>
+              Default currency
             </Text>
-            <Text style={[styles.sectionHint, { color: theme.textSecondary }]}>
-              You can also choose any currency per transaction.
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.currencyGrid}>
-          {featuredCurrencies.map((currency) => {
-            const isSelected = currency.code === currencyCode;
-            return (
-              <Pressable
-                key={currency.code}
-                onPress={() => {
-                  setOnboardingCurrencyCode(currency.code);
-                  setAmountError(null);
-                }}
-                accessibilityRole="button"
-                accessibilityState={{ selected: isSelected }}
-                style={[
-                  styles.currencyChip,
-                  {
-                    backgroundColor: isSelected
-                      ? theme.primarySoft
-                      : theme.surfaceElevated,
-                    borderColor: isSelected ? theme.primary : theme.border,
-                  },
-                ]}>
-                <Text
-                  style={[
-                    styles.currencySymbol,
-                    { color: isSelected ? theme.primary : theme.text },
-                  ]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit>
-                  {currency.symbol}
-                </Text>
-                <View style={styles.currencyTextWrap}>
-                  <Text
-                    style={[
-                      styles.currencyCode,
-                      { color: isSelected ? theme.primary : theme.text },
-                    ]}>
-                    {currency.code}
-                  </Text>
-                  <Text
-                    style={[styles.currencyName, { color: theme.textSecondary }]}
-                    numberOfLines={1}>
-                    {currency.name}
-                  </Text>
-                </View>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        <Pressable
-          onPress={() => {
-            setOnboardingCurrencyCode(currencyCode);
-            setAmountError(null);
-            router.push('/currency?mode=onboarding');
-          }}
-          accessibilityRole="button"
-          style={[
-            styles.browseBtn,
-            { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
-          ]}>
-          <View style={styles.browseLeft}>
-            <Ionicons name="globe-outline" size={18} color={theme.primary} />
-            <Text style={[styles.browseText, { color: theme.text }]}>
-              Browse All Currencies ({currencies.length}+)
+            <Text style={[styles.currencyName, { color: theme.text }]} numberOfLines={1}>
+              {selectedCurrency.name}
             </Text>
           </View>
-          <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
-        </Pressable>
-      </AppCard>
 
-      <AppCard>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>
-          2. Opening Balance (Optional)
-        </Text>
-        <Text style={[styles.sectionHint, { color: theme.textSecondary }]}>
-          Enter how much money you currently have available in {selectedCurrency.code}. Leave blank to start at {selectedCurrency.symbol}0.
-        </Text>
+          <Pressable
+            onPress={() => {
+              setOnboardingCurrencyCode(currencyCode);
+              setSubmitError(null);
+              router.push('/currency?mode=onboarding');
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Change default currency"
+            style={({ pressed }) => [
+              styles.currencyPill,
+              {
+                backgroundColor: theme.primarySoft,
+                borderColor: theme.primary,
+              },
+              pressed && styles.pressed,
+            ]}>
+            <Text style={[styles.currencyPillText, { color: theme.primary }]}>
+              {selectedCurrency.code} ({selectedCurrency.symbol})
+            </Text>
+            <Text style={[styles.currencyPillAction, { color: theme.primary }]}>
+              · Change
+            </Text>
+          </Pressable>
+        </View>
 
-        <AppInput
-          label={`Opening Balance (${selectedCurrency.code})`}
-          prefix={selectedCurrency.symbol}
-          value={openingBalanceText}
-          onChangeText={(text) => {
-            setOpeningBalanceText(text);
-            if (amountError) setAmountError(null);
-          }}
-          keyboardType={selectedCurrency.minorUnits === 0 ? 'number-pad' : 'decimal-pad'}
-          placeholder={selectedCurrency.minorUnits === 0 ? '0' : '0.00'}
-          error={amountError}
-          helperText="Opening balance is tracked in its own currency separately from your income."
-        />
+        <Text style={[styles.currencyHelper, { color: theme.textMuted }]}>
+          You can add an opening balance or pick any currency per transaction anytime in Settings.
+        </Text>
       </AppCard>
     </AppScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  hero: {
-    alignItems: 'flex-start',
-    gap: Spacing.two,
-    paddingTop: Spacing.two,
+  screenContent: {
+    flexGrow: 1,
+    justifyContent: 'space-between',
+    paddingTop: Spacing.five,
+    paddingBottom: Spacing.three,
   },
-  badge: {
+  topBrand: {
+    gap: Spacing.three,
+  },
+  brandBadge: {
     width: 56,
     height: 56,
     borderRadius: Radius.lg,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  title: {
-    fontSize: 26,
-    fontWeight: '700',
-    lineHeight: 32,
+  brandWordmark: {
+    fontSize: 30,
+    fontWeight: '800',
+    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 22,
   },
-  sectionHeaderRow: {
+  currencyCard: {
+    gap: Spacing.two,
+  },
+  currencyCardTop: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: Spacing.two,
   },
   flex1: {
     flex: 1,
   },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  sectionHint: {
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 2,
-  },
-  currencyGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.two,
-    marginTop: Spacing.one,
-  },
-  currencyChip: {
-    width: '48%',
-    flexGrow: 1,
-    minWidth: 140,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    padding: Spacing.two + 2,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
-  },
-  currencySymbol: {
-    fontSize: 18,
-    fontWeight: '700',
-    minWidth: 28,
-    textAlign: 'center',
-  },
-  currencyTextWrap: {
-    flex: 1,
-  },
-  currencyCode: {
-    fontSize: 14,
-    fontWeight: '700',
+  currencyLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   currencyName: {
-    fontSize: 11,
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 2,
   },
-  browseBtn: {
+  currencyPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    borderRadius: Radius.md,
-    borderWidth: 1,
+    gap: 4,
     paddingHorizontal: Spacing.three - 2,
-    paddingVertical: Spacing.two + 3,
-    marginTop: Spacing.one,
+    paddingVertical: Spacing.one + 4,
+    borderRadius: Radius.full,
+    borderWidth: 1,
   },
-  browseLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
-  },
-  browseText: {
+  currencyPillText: {
     fontSize: 14,
+    fontWeight: '700',
+  },
+  currencyPillAction: {
+    fontSize: 13,
     fontWeight: '600',
   },
+  currencyHelper: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
   footerWrap: {
-    gap: Spacing.two,
+    gap: Spacing.two + 2,
   },
   submitError: {
     fontSize: 13,
-    fontWeight: '500',
+    fontWeight: '600',
     textAlign: 'center',
+  },
+  configHint: {
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 17,
+  },
+  pressed: {
+    opacity: 0.78,
   },
 });

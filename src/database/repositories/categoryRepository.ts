@@ -1,4 +1,5 @@
 import type { SqlBindValue, SqlDatabaseAdapter } from '@/database/driver';
+import { isLocalRelativeImagePath } from '@/services/images/mediaPathUtils';
 import type {
   CategoryRow,
   CreateCategoryInput,
@@ -9,13 +10,18 @@ import type { Category, CategoryType } from '@/types/models';
 import { generateUUID } from '@/utils/uuid';
 
 import { mapCategoryRow } from './mappers';
+import {
+  enqueueOutboxChangeIfLinked,
+  markLocalMediaPendingDelete,
+  trackLocalMediaPendingUpload,
+} from './syncRepository';
 
 export class SQLiteCategoryRepository implements ICategoryRepository {
   constructor(private readonly getDb: () => Promise<SqlDatabaseAdapter>) {}
 
   async getAll(options?: { type?: CategoryType; includeArchived?: boolean }): Promise<Category[]> {
     const db = await this.getDb();
-    const conditions: string[] = [];
+    const conditions: string[] = ['deleted_at IS NULL'];
     const params: SqlBindValue[] = [];
 
     if (options?.type) {
@@ -40,7 +46,7 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
   async getById(id: string): Promise<Category | null> {
     const db = await this.getDb();
     const row = await db.getFirstAsync<CategoryRow>(
-      'SELECT * FROM categories WHERE id = ? LIMIT 1',
+      'SELECT * FROM categories WHERE id = ? AND deleted_at IS NULL LIMIT 1',
       id,
     );
     return row ? mapCategoryRow(row) : null;
@@ -78,7 +84,7 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
 
     const db = await this.getDb();
     const existingDuplicate = await db.getFirstAsync<CategoryRow>(
-      'SELECT * FROM categories WHERE LOWER(name) = LOWER(?) AND type = ? LIMIT 1',
+      'SELECT * FROM categories WHERE LOWER(name) = LOWER(?) AND type = ? AND deleted_at IS NULL LIMIT 1',
       trimmedName,
       input.type,
     );
@@ -98,22 +104,40 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
 
     const id = input.id ?? generateUUID();
     const now = new Date().toISOString();
+    const nextImageUri = input.imageUri?.trim() || null;
 
-    await db.runAsync(
-      `INSERT INTO categories (
-        id, name, type, parent_id, icon, color, image_uri, is_default, is_archived, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-      id,
-      trimmedName,
-      input.type,
-      parentId,
-      input.icon,
-      input.color,
-      input.imageUri ?? null,
-      input.isDefault ? 1 : 0,
-      now,
-      now,
-    );
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO categories (
+          id, name, type, parent_id, icon, color, image_uri, is_default, is_archived, deleted_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`,
+        id,
+        trimmedName,
+        input.type,
+        parentId,
+        input.icon,
+        input.color,
+        nextImageUri,
+        input.isDefault ? 1 : 0,
+        now,
+        now,
+      );
+
+      if (nextImageUri && isLocalRelativeImagePath(nextImageUri)) {
+        await trackLocalMediaPendingUpload(db, {
+          localPath: nextImageUri,
+          entityType: 'category',
+          entityId: id,
+        });
+      }
+
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'category',
+        entityId: id,
+        operation: 'upsert',
+        localUpdatedAt: now,
+      });
+    });
 
     const created = await this.getById(id);
     if (!created) {
@@ -141,7 +165,7 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
     const db = await this.getDb();
     if (nextName.toLowerCase() !== existing.name.toLowerCase()) {
       const duplicate = await db.getFirstAsync<Pick<CategoryRow, 'id'>>(
-        'SELECT id FROM categories WHERE LOWER(name) = LOWER(?) AND type = ? AND id != ? LIMIT 1',
+        'SELECT id FROM categories WHERE LOWER(name) = LOWER(?) AND type = ? AND id != ? AND deleted_at IS NULL LIMIT 1',
         nextName,
         existing.type,
         id,
@@ -158,19 +182,39 @@ export class SQLiteCategoryRepository implements ICategoryRepository {
 
     const now = new Date().toISOString();
 
-    await db.runAsync(
-      `UPDATE categories
-       SET name = ?, parent_id = ?, icon = ?, color = ?, image_uri = ?, is_archived = ?, updated_at = ?
-       WHERE id = ?`,
-      nextName,
-      nextParentId,
-      input.icon ?? existing.icon,
-      input.color ?? existing.color,
-      nextImageUri,
-      input.isArchived !== undefined ? (input.isArchived ? 1 : 0) : existing.isArchived ? 1 : 0,
-      now,
-      id,
-    );
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `UPDATE categories
+         SET name = ?, parent_id = ?, icon = ?, color = ?, image_uri = ?, is_archived = ?, updated_at = ?
+         WHERE id = ? AND deleted_at IS NULL`,
+        nextName,
+        nextParentId,
+        input.icon ?? existing.icon,
+        input.color ?? existing.color,
+        nextImageUri,
+        input.isArchived !== undefined ? (input.isArchived ? 1 : 0) : existing.isArchived ? 1 : 0,
+        now,
+        id,
+      );
+
+      if (existing.imageUri && existing.imageUri !== nextImageUri && isLocalRelativeImagePath(existing.imageUri)) {
+        await markLocalMediaPendingDelete(db, existing.imageUri);
+      }
+      if (nextImageUri && nextImageUri !== existing.imageUri && isLocalRelativeImagePath(nextImageUri)) {
+        await trackLocalMediaPendingUpload(db, {
+          localPath: nextImageUri,
+          entityType: 'category',
+          entityId: id,
+        });
+      }
+
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'category',
+        entityId: id,
+        operation: 'upsert',
+        localUpdatedAt: now,
+      });
+    });
 
     const updated = await this.getById(id);
     if (!updated) {

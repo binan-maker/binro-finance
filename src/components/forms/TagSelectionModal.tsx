@@ -146,9 +146,9 @@ export function TagSelectionModal({
                   styles.tagPill,
                   {
                     backgroundColor: selected
-                      ? theme.primary
+                      ? `${tag.color}20`
                       : theme.surfaceElevated,
-                    borderColor: selected ? theme.primary : theme.border,
+                    borderColor: selected ? tag.color : theme.border,
                   },
                   pressed && styles.pressed,
                 ]}>
@@ -156,14 +156,14 @@ export function TagSelectionModal({
                   style={[
                     styles.tagDot,
                     {
-                      backgroundColor: selected ? theme.primaryText : tag.color,
+                      backgroundColor: tag.color,
                     },
                   ]}
                 />
                 <Text
                   style={[
                     styles.tagText,
-                    { color: selected ? theme.primaryText : theme.text },
+                    { color: theme.text },
                   ]}>
                   {tag.name}
                 </Text>

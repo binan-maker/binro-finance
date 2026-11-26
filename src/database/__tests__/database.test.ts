@@ -63,9 +63,9 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     repos = createRepositories(async () => db);
   });
 
-  test('runs V4 migrations idempotently and seeds V2/V3/V4 categories, payment methods, and settings', async () => {
+  test('runs V5 migrations idempotently and seeds V2/V3/V4/V5 categories, payment methods, and settings', async () => {
     const version = await runMigrations(db);
-    expect(version).toBe(4);
+    expect(version).toBe(5);
 
     const categories = await repos.categories.getAll({ includeArchived: true });
     const expectedCount =
@@ -167,7 +167,7 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     );
 
     const upgradedVersion = await runMigrations(v1Db);
-    expect(upgradedVersion).toBe(4);
+    expect(upgradedVersion).toBe(5);
 
     const upgradedRepos = createRepositories(async () => v1Db);
     const settings = await upgradedRepos.settings.get();
@@ -456,7 +456,7 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     expect(notifs.map((n) => n.id)).toEqual([n2.id]);
 
     const exported = await repos.backup.exportAll('2.0.0');
-    expect(exported.schemaVersion).toBe(4);
+    expect(exported.schemaVersion).toBe(5);
     expect(exported.transactions.length).toBe(1);
     expect(exported.transactions[0].tagIds).toEqual([tag.id]);
 
@@ -564,7 +564,7 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     );
 
     const version = await runMigrations(v3Db);
-    expect(version).toBe(4);
+    expect(version).toBe(5);
 
     const upgradedRepos = createRepositories(async () => v3Db);
     const settings = await upgradedRepos.settings.get();
@@ -733,10 +733,10 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     expect(emptyOverview.totalBudgetMinor).toBe(0);
     expect(emptyOverview.totalSpentMinor).toBe(0);
 
-    // Settings shortcut flag & backup/restore preserve V4 fields cleanly
+    // Settings shortcut flag & backup/restore preserve V5 fields cleanly
     await repos.settings.update({ showHomeBudgetShortcut: true });
-    const exported = await repos.backup.exportAll('4.0.0');
-    expect(exported.schemaVersion).toBe(4);
+    const exported = await repos.backup.exportAll('5.0.0');
+    expect(exported.schemaVersion).toBe(5);
     expect(exported.settings.showHomeBudgetShortcut).toBe(true);
     expect(exported.budgets.some((b) => b.period === 'biweekly' && b.startDate === '2026-11-24')).toBe(
       true,
@@ -753,5 +753,70 @@ describe('SQLite V2 migrations, repositories & multi-currency calculations', () 
     expect(restoredCat?.imageUri).toBe('file:///docs/binro_images/categories/cat-gear.jpg');
     const restoredBudgets = await repos.budgets.getAll();
     expect(restoredBudgets.find((b) => b.period === 'biweekly')?.startDate).toBe('2026-11-24');
+  });
+
+  test('upgrades a simulated V4 database to V5 and supports PM images, tombstones, and sync tables', async () => {
+    const v4Db = createBunSqliteAdapter();
+    await v4Db.execAsync('PRAGMA foreign_keys = ON;');
+    for (const m of MIGRATIONS.filter((item) => item.version <= 4)) {
+      await m.up(v4Db);
+      await v4Db.execAsync(`PRAGMA user_version = ${m.version};`);
+    }
+
+    const now = '2026-11-20T10:00:00.000Z';
+    await v4Db.runAsync(
+      "INSERT INTO payment_methods (id, name, icon, is_builtin, is_archived, created_at, updated_at) VALUES ('pm-v4-custom', 'Office Card', 'card', 0, 0, ?, ?)",
+      now,
+      now,
+    );
+
+    const upgraded = await runMigrations(v4Db);
+    expect(upgraded).toBe(5);
+
+    const v5Repos = createRepositories(async () => v4Db);
+    const pm = await v5Repos.paymentMethods.create({
+      name: 'Family Wallet',
+      icon: 'wallet',
+      imageUri: 'binro_images/payment_methods/family.jpg',
+    });
+    expect(pm.imageUri).toBe('binro_images/payment_methods/family.jpg');
+
+    const v4Pm = await v5Repos.paymentMethods.getById('pm-v4-custom');
+    expect(v4Pm?.imageUri).toBeNull();
+
+    // Soft-delete tombstone hides record from active queries while preserving deleted_at row
+    const tag = await v5Repos.tags.create({ name: 'TempTag', color: '#10B981' });
+    const tx = await v5Repos.transactions.create({
+      type: 'expense',
+      title: 'Quick Snack',
+      amountMinor: 1200,
+      currencyCode: 'INR',
+      categoryId: 'cat-exp-food',
+      categoryNameSnapshot: 'Food & Drink',
+      paymentMethodId: pm.id,
+      paymentMethod: pm.name,
+      tagIds: [tag.id],
+      transactionDate: '2026-11-22',
+    });
+    await v5Repos.transactions.delete(tx.id);
+    expect(await v5Repos.transactions.getById(tx.id)).toBeNull();
+    const rawTombstone = await v4Db.getFirstAsync<{ deleted_at: string | null }>(
+      'SELECT deleted_at FROM transactions WHERE id = ?',
+      tx.id,
+    );
+    expect(rawTombstone?.deleted_at).toBeTruthy();
+
+    // V5 backup preserves custom payment method imageUri and profile metadata
+    await v5Repos.settings.update({
+      gender: 'non_binary',
+      dateOfBirth: '1997-04-12',
+    });
+    const exported = await v5Repos.backup.exportAll('5.0.0');
+    expect(exported.schemaVersion).toBe(5);
+    expect(
+      exported.paymentMethods.find((item) => item.id === pm.id)?.imageUri,
+    ).toBe('binro_images/payment_methods/family.jpg');
+    expect(exported.settings.gender).toBe('non_binary');
+    expect(exported.settings.dateOfBirth).toBe('1997-04-12');
   });
 });

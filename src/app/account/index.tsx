@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -12,7 +13,32 @@ import {
 } from '@/components/common';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { resolveLocalImageUri } from '@/services/images/localImageStorage';
 import { useAppStore } from '@/store/app-store';
+import type { SyncStatus } from '@/types/models';
+import { formatDateForDisplay } from '@/utils/date';
+import { getProfileInitials, PROFILE_AVATAR_COLOR } from '@/utils/profile';
+
+function getSyncStatusMeta(
+  status: SyncStatus,
+  theme: ReturnType<typeof useTheme>,
+): { label: string; color: string; bg: string } {
+  switch (status) {
+    case 'syncing':
+      return { label: 'Syncing...', color: theme.primary, bg: theme.primarySoft };
+    case 'synced':
+      return { label: 'Synced', color: theme.income, bg: theme.primarySoft };
+    case 'offline':
+      return { label: 'Offline', color: theme.warning, bg: theme.surfaceElevated };
+    case 'error':
+      return { label: 'Sync Error', color: theme.danger, bg: theme.surfaceElevated };
+    case 'needs_account_switch':
+      return { label: 'Action Needed', color: theme.warning, bg: theme.surfaceElevated };
+    case 'idle':
+    default:
+      return { label: 'Ready', color: theme.textSecondary, bg: theme.surfaceElevated };
+  }
+}
 
 export default function AccountManagementScreen() {
   const theme = useTheme();
@@ -23,11 +49,71 @@ export default function AccountManagementScreen() {
   const categories = useAppStore((s) => s.categories);
   const tags = useAppStore((s) => s.tags);
   const budgets = useAppStore((s) => s.budgets);
+  const authUser = useAppStore((s) => s.authUser);
+  const authBusy = useAppStore((s) => s.authBusy);
+  const syncState = useAppStore((s) => s.syncState);
+  const pendingOutboxCount = useAppStore((s) => s.pendingOutboxCount);
+  const signInWithGoogle = useAppStore((s) => s.signInWithGoogle);
+  const syncNow = useAppStore((s) => s.syncNow);
+  const signOutCloud = useAppStore((s) => s.signOutCloud);
   const clearAllLocalData = useAppStore((s) => s.clearAllLocalData);
 
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [syncingManual, setSyncingManual] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [failedAvatarUri, setFailedAvatarUri] = useState<string | null>(null);
+
+  const avatarUri =
+    resolveLocalImageUri(settings.profileAvatar) ??
+    resolveLocalImageUri(authUser?.googleAvatarUrl ?? settings.googleAvatarUrl);
+  const showAvatar = Boolean(avatarUri && failedAvatarUri !== avatarUri);
+  const initials = getProfileInitials(
+    authUser?.googleName || settings.profileName || authUser?.email,
+  );
+  const statusMeta = getSyncStatusMeta(syncState.syncStatus, theme);
+
+  const lastSyncedLabel = syncState.lastSyncedAt
+    ? `${formatDateForDisplay(syncState.lastSyncedAt.slice(0, 10), settings.dateFormat)} · ${syncState.lastSyncedAt.slice(11, 16)} UTC`
+    : 'Not synced yet';
+
+  const handleGoogleSignIn = async () => {
+    setErrorMsg(null);
+    const result = await signInWithGoogle();
+    if (result.status === 'error') {
+      setErrorMsg(result.message);
+      return;
+    }
+    if (result.status === 'success') {
+      const latest = useAppStore.getState();
+      if (!latest.accountSwitchConflict && !latest.settings.profileCompletedAt) {
+        router.push('/profile/complete');
+      }
+    }
+  };
+
+  const handleSyncNow = async () => {
+    if (syncingManual || authBusy) return;
+    setErrorMsg(null);
+    setSyncingManual(true);
+    try {
+      const res = await syncNow();
+      if (res.status === 'error' && res.message) {
+        setErrorMsg(res.message);
+      }
+    } finally {
+      setSyncingManual(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    setErrorMsg(null);
+    try {
+      await signOutCloud();
+    } catch {
+      setErrorMsg('Unable to sign out right now.');
+    }
+  };
 
   const handleClearAll = async () => {
     if (clearing) return;
@@ -48,6 +134,137 @@ export default function AccountManagementScreen() {
   return (
     <AppScreen edges={['top', 'bottom', 'left', 'right']}>
       <AppHeader title="Account Management" showBack />
+
+      <AppCard>
+        {authUser ? (
+          <>
+            <View style={styles.cardHeader}>
+              <View
+                style={[
+                  styles.avatarBadge,
+                  { backgroundColor: PROFILE_AVATAR_COLOR },
+                ]}>
+                {showAvatar && avatarUri ? (
+                  <Image
+                    source={{ uri: avatarUri }}
+                    style={styles.avatarImage}
+                    contentFit="cover"
+                    onError={() => setFailedAvatarUri(avatarUri)}
+                  />
+                ) : (
+                  <Text style={styles.avatarInitials}>{initials}</Text>
+                )}
+              </View>
+              <View style={styles.flex1}>
+                <Text style={[styles.cardTitle, { color: theme.text }]} numberOfLines={1}>
+                  {authUser.googleName || settings.profileName || 'Google Account'}
+                </Text>
+                <Text style={[styles.cardSub, { color: theme.textSecondary }]} numberOfLines={1}>
+                  {authUser.email ?? settings.googleEmail ?? 'Signed in with Google'}
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.statusBadge,
+                  { backgroundColor: statusMeta.bg, borderColor: theme.border },
+                ]}>
+                <Text style={[styles.statusBadgeText, { color: statusMeta.color }]}>
+                  {statusMeta.label}
+                </Text>
+              </View>
+            </View>
+
+            <View style={[styles.divider, { backgroundColor: theme.border }]} />
+
+            <View style={styles.syncMetaRows}>
+              <View style={styles.syncMetaRow}>
+                <Text style={[styles.syncMetaLabel, { color: theme.textSecondary }]}>
+                  Last synced
+                </Text>
+                <Text style={[styles.syncMetaValue, { color: theme.text }]}>
+                  {lastSyncedLabel}
+                </Text>
+              </View>
+              <View style={styles.syncMetaRow}>
+                <Text style={[styles.syncMetaLabel, { color: theme.textSecondary }]}>
+                  Pending local changes
+                </Text>
+                <Text style={[styles.syncMetaValue, { color: theme.text }]}>
+                  {pendingOutboxCount === 0
+                    ? 'All backed up'
+                    : `${pendingOutboxCount} pending`}
+                </Text>
+              </View>
+            </View>
+
+            {syncState.syncStatus === 'error' && syncState.lastError ? (
+              <Text style={[styles.inlineError, { color: theme.danger }]}>
+                {syncState.lastError}
+              </Text>
+            ) : null}
+
+            <View style={styles.cloudActionsRow}>
+              <View style={styles.flex1}>
+                <AppButton
+                  label="Sync Now"
+                  icon={<Ionicons name="sync-outline" size={16} color="#FFFFFF" />}
+                  onPress={() => void handleSyncNow()}
+                  loading={syncingManual || syncState.syncStatus === 'syncing'}
+                  disabled={authBusy}
+                  fullWidth
+                />
+              </View>
+              <View style={styles.flex1}>
+                <AppButton
+                  label="Sign Out"
+                  variant="outline"
+                  onPress={() => void handleSignOut()}
+                  disabled={authBusy || syncingManual}
+                  fullWidth
+                />
+              </View>
+            </View>
+
+            <Text style={[styles.cloudHint, { color: theme.textMuted }]}>
+              Signing out keeps all financial records stored locally on this device.
+            </Text>
+          </>
+        ) : (
+          <>
+            <View style={styles.cardHeader}>
+              <View style={[styles.iconBadge, { backgroundColor: theme.primarySoft }]}>
+                <Ionicons name="cloud-upload-outline" size={20} color={theme.primary} />
+              </View>
+              <View style={styles.flex1}>
+                <Text style={[styles.cardTitle, { color: theme.text }]}>
+                  Cloud Backup & Sync (Optional)
+                </Text>
+                <Text style={[styles.cardSub, { color: theme.textSecondary }]}>
+                  Back up your ledger and custom icons privately with Google
+                </Text>
+              </View>
+            </View>
+
+            {syncState.linkedUserEmail ? (
+              <Text style={[styles.cloudHint, { color: theme.textSecondary }]}>
+                Previously linked to {syncState.linkedUserEmail}
+                {pendingOutboxCount > 0
+                  ? ` · ${pendingOutboxCount} local change(s) queued`
+                  : ''}
+              </Text>
+            ) : null}
+
+            <AppButton
+              label="Continue with Google"
+              variant="outline"
+              icon={<Ionicons name="logo-google" size={18} color={theme.text} />}
+              onPress={() => void handleGoogleSignIn()}
+              loading={authBusy}
+              fullWidth
+            />
+          </>
+        )}
+      </AppCard>
 
       <AppCard>
         <View style={styles.cardHeader}>
@@ -108,7 +325,7 @@ export default function AccountManagementScreen() {
       <ConfirmDialog
         visible={confirmVisible}
         title="Clear All Local Data?"
-        message="All local data will be permanently deleted. This action cannot be undone."
+        message="All local data on this device will be permanently deleted. This action cannot be undone."
         confirmLabel="Clear All Data"
         cancelLabel="Cancel"
         destructive
@@ -146,6 +363,61 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  avatarBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  avatarInitials: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  statusBadge: {
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 4,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  syncMetaRows: {
+    gap: 6,
+  },
+  syncMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  syncMetaLabel: {
+    fontSize: 13,
+  },
+  syncMetaValue: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  cloudActionsRow: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  cloudHint: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  inlineError: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   flex1: {
     flex: 1,

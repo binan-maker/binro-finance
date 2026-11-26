@@ -16,6 +16,46 @@ export type BudgetPeriod = 'monthly' | 'biweekly' | 'yearly';
 
 export type NotificationType = 'backup' | 'budget_alert' | 'system';
 
+export type GenderOption =
+  | 'prefer_not_to_say'
+  | 'female'
+  | 'male'
+  | 'non_binary'
+  | 'other';
+
+export type SyncStatus =
+  | 'idle'
+  | 'syncing'
+  | 'offline'
+  | 'error'
+  | 'pending_link'
+  | 'needs_account_switch';
+
+export type SyncEntityType =
+  | 'profile'
+  | 'settings'
+  | 'category'
+  | 'payment_method'
+  | 'tag'
+  | 'transaction'
+  | 'transaction_tag'
+  | 'budget';
+
+export type SyncOperationType = 'upsert' | 'delete';
+
+export type EntitlementTier = 'free' | 'pro';
+
+export type EntitlementStatus = 'active' | 'inactive' | 'grace_period' | 'expired';
+
+export interface UserEntitlement {
+  userId: string | null;
+  tier: EntitlementTier;
+  status: EntitlementStatus;
+  expiresAt: string | null;
+  source: string;
+  updatedAt: string | null;
+}
+
 export interface Tag {
   id: string;
   name: string;
@@ -29,6 +69,7 @@ export interface PaymentMethodRecord {
   id: string;
   name: string;
   icon: string;
+  imageUri: string | null;
   isBuiltin: boolean;
   isArchived: boolean;
   createdAt: string;
@@ -92,6 +133,13 @@ export interface AppSettings {
   profileAvatar: string | null;
   currencyInitialized: boolean;
   showHomeBudgetShortcut: boolean;
+  gender: GenderOption | null;
+  dateOfBirth: string | null; // YYYY-MM-DD
+  googleName: string | null;
+  googleEmail: string | null;
+  googleAvatarUrl: string | null;
+  profileCompletedAt: string | null;
+  updatedAt: string;
 }
 
 export interface AppNotification {
@@ -102,4 +150,15 @@ export interface AppNotification {
   isRead: boolean;
   metadataJson: string | null;
   createdAt: string;
+}
+
+export interface SyncStateSnapshot {
+  linkedUserId: string | null;
+  linkedUserEmail: string | null;
+  migrationCompletedAt: string | null;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  syncStatus: SyncStatus;
+  cursors: Record<string, { serverUpdatedAt: string; id: string }>;
+  anonymousInstallId: string;
 }

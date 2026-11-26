@@ -78,8 +78,11 @@ CREATE INDEX IF NOT EXISTS idx_notifications_created
 export async function seedDefaultPaymentMethods(db: SqlDatabaseAdapter): Promise<void> {
   const now = new Date().toISOString();
   for (const pm of DEFAULT_PAYMENT_METHODS) {
+    const hasDeletedAt = await hasColumn(db, 'payment_methods', 'deleted_at');
     const existing = await db.getFirstAsync<{ id: string }>(
-      'SELECT id FROM payment_methods WHERE id = ? OR LOWER(name) = LOWER(?) LIMIT 1',
+      hasDeletedAt
+        ? 'SELECT id FROM payment_methods WHERE id = ? OR (LOWER(name) = LOWER(?) AND deleted_at IS NULL) LIMIT 1'
+        : 'SELECT id FROM payment_methods WHERE id = ? OR LOWER(name) = LOWER(?) LIMIT 1',
       pm.id,
       pm.name,
     );
@@ -116,9 +119,12 @@ export async function seedDefaultCurrencies(db: SqlDatabaseAdapter): Promise<voi
 
 export async function seedV2DefaultCategoriesSafely(db: SqlDatabaseAdapter): Promise<void> {
   const now = new Date().toISOString();
+  const hasDeletedAt = await hasColumn(db, 'categories', 'deleted_at');
   for (const cat of DEFAULT_CATEGORIES) {
     const existing = await db.getFirstAsync<{ id: string }>(
-      'SELECT id FROM categories WHERE id = ? OR (LOWER(name) = LOWER(?) AND type = ?) LIMIT 1',
+      hasDeletedAt
+        ? 'SELECT id FROM categories WHERE id = ? OR (LOWER(name) = LOWER(?) AND type = ? AND deleted_at IS NULL) LIMIT 1'
+        : 'SELECT id FROM categories WHERE id = ? OR (LOWER(name) = LOWER(?) AND type = ?) LIMIT 1',
       cat.id,
       cat.name,
       cat.type,

@@ -1,7 +1,9 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -20,6 +22,10 @@ import {
 } from '@/components/common';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import {
+  deleteStoredImage,
+  pickAndSaveSquareImage,
+} from '@/services/images/localImageStorage';
 import { useAppStore } from '@/store/app-store';
 import { validatePaymentMethodName } from '@/utils/validation';
 
@@ -40,8 +46,20 @@ export default function PaymentMethodDetailsScreen() {
   const [editVisible, setEditVisible] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [iconInput, setIconInput] = useState<string>('wallet');
+  const [imageUriInput, setImageUriInput] = useState<string | null>(null);
+  const [pickingImage, setPickingImage] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const unsavedImageRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (unsavedImageRef.current) {
+        deleteStoredImage(unsavedImageRef.current);
+      }
+    };
+  }, []);
 
   const [archiveDialogVisible, setArchiveDialogVisible] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -81,10 +99,53 @@ export default function PaymentMethodDetailsScreen() {
   }
 
   const openEdit = () => {
+    if (unsavedImageRef.current) {
+      deleteStoredImage(unsavedImageRef.current);
+      unsavedImageRef.current = null;
+    }
     setNameInput(method.name);
     setIconInput(method.icon);
+    setImageUriInput(method.imageUri);
     setEditorError(null);
     setEditVisible(true);
+  };
+
+  const closeEdit = () => {
+    if (unsavedImageRef.current) {
+      deleteStoredImage(unsavedImageRef.current);
+      unsavedImageRef.current = null;
+    }
+    setEditVisible(false);
+  };
+
+  const handlePickImage = async () => {
+    if (pickingImage || saving) return;
+    setPickingImage(true);
+    setEditorError(null);
+    try {
+      const result = await pickAndSaveSquareImage('payment_methods');
+      if (result.error) {
+        setEditorError(result.error);
+        return;
+      }
+      if (!result.canceled && result.relativePath) {
+        if (unsavedImageRef.current) {
+          deleteStoredImage(unsavedImageRef.current);
+        }
+        unsavedImageRef.current = result.relativePath;
+        setImageUriInput(result.relativePath);
+      }
+    } finally {
+      setPickingImage(false);
+    }
+  };
+
+  const handleRemoveImage = () => {
+    if (unsavedImageRef.current) {
+      deleteStoredImage(unsavedImageRef.current);
+      unsavedImageRef.current = null;
+    }
+    setImageUriInput(null);
   };
 
   const handleSave = async () => {
@@ -95,13 +156,21 @@ export default function PaymentMethodDetailsScreen() {
       return;
     }
 
+    const previousSavedUri = method.imageUri;
+
     setSaving(true);
     setEditorError(null);
     try {
       await updatePaymentMethod(method.id, {
         name: check.value,
         icon: iconInput,
+        imageUri: imageUriInput,
       });
+
+      if (previousSavedUri && previousSavedUri !== imageUriInput) {
+        deleteStoredImage(previousSavedUri);
+      }
+      unsavedImageRef.current = null;
       setEditVisible(false);
     } catch (err) {
       setEditorError(
@@ -131,10 +200,14 @@ export default function PaymentMethodDetailsScreen() {
 
   const handleDelete = async () => {
     if (deleting) return;
+    const savedUri = method.imageUri;
     setDeleting(true);
     setActionError(null);
     try {
       await deletePaymentMethod(method.id);
+      if (savedUri) {
+        deleteStoredImage(savedUri);
+      }
       setDeleteDialogVisible(false);
       if (router.canGoBack()) {
         router.back();
@@ -185,7 +258,12 @@ export default function PaymentMethodDetailsScreen() {
 
       <AppCard>
         <View style={styles.heroRow}>
-          <CategoryIcon icon={method.icon} color={theme.primary} size={52} />
+          <CategoryIcon
+            icon={method.icon}
+            color={theme.primary}
+            imageUri={method.imageUri}
+            size={52}
+          />
           <View style={styles.badges}>
             <View style={[styles.badge, { backgroundColor: theme.surfaceElevated }]}>
               <Text style={[styles.badgeText, { color: theme.textSecondary }]}>
@@ -235,53 +313,108 @@ export default function PaymentMethodDetailsScreen() {
 
       <BottomSheetModal
         visible={editVisible}
-        onClose={() => setEditVisible(false)}
+        onClose={closeEdit}
         keyboardAvoiding>
-        <Text style={[styles.modalTitle, { color: theme.text }]}>
-          Edit Payment Method
-        </Text>
-
-        <AppInput
-          label="Method Name"
-          value={nameInput}
-          onChangeText={(t) => {
-            setNameInput(t);
-            if (editorError) setEditorError(null);
-          }}
-          placeholder="Payment method name"
-          maxLength={40}
-          error={editorError}
-        />
-
-        <Text style={[styles.label, { color: theme.text }]}>Icon</Text>
-        <View style={styles.iconGrid}>
-          {PM_ICONS.map((iconKey) => {
-            const selected = iconInput === iconKey;
-            return (
-              <Pressable
-                key={iconKey}
-                onPress={() => setIconInput(iconKey)}
-                style={[
-                  styles.iconChoice,
-                  {
-                    borderColor: selected ? theme.primary : theme.border,
-                    backgroundColor: selected
-                      ? theme.primarySoft
-                      : theme.surfaceElevated,
-                  },
-                ]}>
-                <CategoryIcon icon={iconKey} color={theme.primary} size={32} />
-              </Pressable>
-            );
-          })}
+        <View style={styles.sheetHeader}>
+          <Text style={[styles.modalTitle, { color: theme.text }]}>
+            Edit Payment Method
+          </Text>
+          <Pressable
+            onPress={closeEdit}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close edit payment method modal">
+            <Ionicons name="close" size={22} color={theme.textSecondary} />
+          </Pressable>
         </View>
+
+        <ScrollView
+          style={styles.modalScroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}>
+          <View style={styles.modalBody}>
+            <AppInput
+              label="Method Name"
+              value={nameInput}
+              onChangeText={(t) => {
+                setNameInput(t);
+                if (editorError) setEditorError(null);
+              }}
+              placeholder="Payment method name"
+              maxLength={40}
+              error={editorError}
+            />
+
+            <View style={styles.imageSection}>
+              <Text style={[styles.label, { color: theme.text }]}>
+                Custom Image (Optional)
+              </Text>
+              <View style={styles.imageRow}>
+                <CategoryIcon
+                  icon={iconInput}
+                  color={theme.primary}
+                  imageUri={imageUriInput}
+                  size={48}
+                />
+                <View style={styles.imageButtonsRow}>
+                  <View style={styles.flex1}>
+                    <AppButton
+                      label={imageUriInput ? 'Change Image' : 'Upload Image'}
+                      size="sm"
+                      variant="outline"
+                      loading={pickingImage}
+                      icon={<Ionicons name="image-outline" size={16} color={theme.text} />}
+                      onPress={() => void handlePickImage()}
+                      fullWidth
+                    />
+                  </View>
+                  {imageUriInput ? (
+                    <View style={styles.flex1}>
+                      <AppButton
+                        label="Remove"
+                        size="sm"
+                        variant="outline"
+                        icon={<Ionicons name="trash-outline" size={15} color={theme.danger} />}
+                        onPress={handleRemoveImage}
+                        fullWidth
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            </View>
+
+            <Text style={[styles.label, { color: theme.text }]}>Fallback Icon</Text>
+            <View style={styles.iconGrid}>
+              {PM_ICONS.map((iconKey) => {
+                const selected = iconInput === iconKey;
+                return (
+                  <Pressable
+                    key={iconKey}
+                    onPress={() => setIconInput(iconKey)}
+                    style={[
+                      styles.iconChoice,
+                      {
+                        borderColor: selected ? theme.primary : theme.border,
+                        backgroundColor: selected
+                          ? theme.primarySoft
+                          : theme.surfaceElevated,
+                      },
+                    ]}>
+                    <CategoryIcon icon={iconKey} color={theme.primary} size={32} />
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        </ScrollView>
 
         <View style={styles.modalActions}>
           <View style={styles.flex1}>
             <AppButton
               label="Cancel"
               variant="outline"
-              onPress={() => setEditVisible(false)}
+              onPress={closeEdit}
               disabled={saving}
               fullWidth
             />
@@ -384,9 +517,33 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   modalTitle: {
     fontSize: 18,
     fontWeight: '700',
+  },
+  modalScroll: {
+    maxHeight: 380,
+  },
+  modalBody: {
+    gap: Spacing.three,
+  },
+  imageSection: {
+    gap: Spacing.two,
+  },
+  imageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
+  imageButtonsRow: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: Spacing.two,
   },
   label: {
     fontSize: 13,

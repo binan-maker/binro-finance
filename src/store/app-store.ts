@@ -7,14 +7,34 @@ import {
 } from '@/constants/currencies';
 import { initializeDatabase } from '@/database';
 import { repositories } from '@/database/repositories';
-import { calculateBudgetProgress } from '@/services/calculations/financialCalculations';
+import { trackAnalyticsEvent } from '@/services/analytics/analyticsService';
+import {
+  buildGoogleFallbackProfilePatch,
+  type GoogleAuthUserProfile,
+  type GoogleSignInFlowResult,
+  signInWithGoogleAccount,
+  signOutGoogleAndSupabase,
+} from '@/services/auth/googleAuthService';
 import { materializeBackupMediaAssets } from '@/services/backup/backupService';
-import { clearAllStoredImages } from '@/services/images/localImageStorage';
+import { calculateBudgetProgress } from '@/services/calculations/financialCalculations';
 import {
   mergeCurrencyCatalog,
   syncCurrencyCatalog,
 } from '@/services/currency/currencyCatalogService';
 import { detectDeviceCurrencyCode } from '@/services/currency/localizationCurrency';
+import {
+  DEFAULT_FREE_ENTITLEMENT,
+  loadCachedEntitlement,
+  refreshUserEntitlement,
+} from '@/services/entitlements/entitlementService';
+import { clearAllStoredImages } from '@/services/images/localImageStorage';
+import {
+  inspectAccountLinkState,
+  linkLocalWorkspaceToUser,
+  runSyncCycle,
+  type SyncRunResult,
+  switchWorkspaceAccountAndSync,
+} from '@/services/sync/syncEngine';
 import type {
   BackupPayload,
   CreateCategoryInput,
@@ -36,9 +56,11 @@ import type {
   Budget,
   Category,
   PaymentMethodRecord,
+  SyncStateSnapshot,
   Tag,
   Transaction,
   TransactionType,
+  UserEntitlement,
 } from '@/types/models';
 import type { TransactionFilterState } from '@/types/reports';
 import { addDaysToISODate, getTodayISODate, parseISODateParts } from '@/utils/date';
@@ -64,6 +86,14 @@ export interface OpeningBalanceDraft {
   currencyCode: string;
   amountText: string;
   reopenOnFocus: boolean;
+}
+
+export interface AccountSwitchConflict {
+  newProfile: GoogleAuthUserProfile;
+  previousUserId: string;
+  previousUserEmail: string | null;
+  hasLocalData: boolean;
+  pendingOutboxCount: number;
 }
 
 export function createDefaultTransactionFilters(): TransactionFilterState {
@@ -94,6 +124,24 @@ const DEFAULT_SETTINGS: AppSettings = {
   profileAvatar: null,
   currencyInitialized: false,
   showHomeBudgetShortcut: false,
+  gender: null,
+  dateOfBirth: null,
+  googleName: null,
+  googleEmail: null,
+  googleAvatarUrl: null,
+  profileCompletedAt: null,
+  updatedAt: '',
+};
+
+const DEFAULT_SYNC_STATE: SyncStateSnapshot = {
+  linkedUserId: null,
+  linkedUserEmail: null,
+  migrationCompletedAt: null,
+  lastSyncedAt: null,
+  lastError: null,
+  syncStatus: 'idle',
+  cursors: {},
+  anonymousInstallId: '',
 };
 
 interface AppStoreState {
@@ -113,9 +161,17 @@ interface AppStoreState {
   onboardingCurrencyCode: string | null;
   openingBalanceDraft: OpeningBalanceDraft | null;
 
+  authUser: GoogleAuthUserProfile | null;
+  authBusy: boolean;
+  syncState: SyncStateSnapshot;
+  pendingOutboxCount: number;
+  entitlement: UserEntitlement;
+  accountSwitchConflict: AccountSwitchConflict | null;
+
   initializeApp: () => Promise<void>;
   refreshData: () => Promise<void>;
   refreshCurrencyCatalog: () => Promise<void>;
+  refreshSyncMetadata: () => Promise<void>;
   setTransactionFilters: (next: TransactionFilterState) => void;
   resetTransactionFilters: () => void;
   setTransactionDraft: (draft: TransactionDraft | null) => void;
@@ -161,6 +217,13 @@ interface AppStoreState {
     mode: 'merge' | 'replace',
   ) => Promise<RestoreResult>;
   clearAllLocalData: () => Promise<void>;
+
+  applySignedInSession: (profile: GoogleAuthUserProfile) => Promise<void>;
+  signInWithGoogle: () => Promise<GoogleSignInFlowResult>;
+  confirmAccountSwitchReplace: () => Promise<void>;
+  cancelAccountSwitch: () => Promise<void>;
+  syncNow: () => Promise<SyncRunResult>;
+  signOutCloud: () => Promise<void>;
 }
 
 async function loadSnapshot() {
@@ -173,6 +236,9 @@ async function loadSnapshot() {
     transactions,
     budgets,
     notifications,
+    syncState,
+    pendingOutboxCount,
+    entitlement,
   ] = await Promise.all([
     repositories.settings.get(),
     repositories.categories.getAll({ includeArchived: true }),
@@ -182,6 +248,9 @@ async function loadSnapshot() {
     repositories.transactions.getAll(),
     repositories.budgets.getAll(),
     repositories.notifications.getAll(),
+    repositories.sync.getSyncState(),
+    repositories.sync.getPendingOutboxCount(),
+    loadCachedEntitlement(),
   ]);
 
   const currencies = mergeCurrencyCatalog(
@@ -197,36 +266,431 @@ async function loadSnapshot() {
     transactions,
     budgets,
     notifications,
+    syncState,
+    pendingOutboxCount,
+    entitlement,
   };
 }
 
-export const useAppStore = create<AppStoreState>((set, get) => ({
-  isInitialized: false,
-  isLoading: false,
-  error: null,
-  settings: DEFAULT_SETTINGS,
-  categories: [],
-  tags: [],
-  paymentMethods: [],
-  currencies: [...FALLBACK_CURRENCIES],
-  transactions: [],
-  budgets: [],
-  notifications: [],
-  transactionFilters: createDefaultTransactionFilters(),
-  transactionDraft: null,
-  onboardingCurrencyCode: null,
-  openingBalanceDraft: null,
+export const useAppStore = create<AppStoreState>((set, get) => {
+  const scheduleBackgroundSync = () => {
+    const { authUser, syncState, accountSwitchConflict, isInitialized } = get();
+    if (!isInitialized || !authUser || accountSwitchConflict) return;
+    if (syncState.linkedUserId && syncState.linkedUserId !== authUser.userId) return;
+    void get().syncNow();
+  };
 
-  initializeApp: async () => {
-    if (get().isLoading) return;
-    set({ isLoading: true, error: null });
+  return {
+    isInitialized: false,
+    isLoading: false,
+    error: null,
+    settings: DEFAULT_SETTINGS,
+    categories: [],
+    tags: [],
+    paymentMethods: [],
+    currencies: [...FALLBACK_CURRENCIES],
+    transactions: [],
+    budgets: [],
+    notifications: [],
+    transactionFilters: createDefaultTransactionFilters(),
+    transactionDraft: null,
+    onboardingCurrencyCode: null,
+    openingBalanceDraft: null,
 
-    try {
-      await initializeDatabase();
-      let snapshot = await loadSnapshot();
+    authUser: null,
+    authBusy: false,
+    syncState: DEFAULT_SYNC_STATE,
+    pendingOutboxCount: 0,
+    entitlement: DEFAULT_FREE_ENTITLEMENT,
+    accountSwitchConflict: null,
 
-      // Only detect device currency on first launch when no saved preference exists
-      if (!snapshot.settings.onboardingCompleted && !snapshot.settings.currencyInitialized) {
+    initializeApp: async () => {
+      if (get().isLoading) return;
+      set({ isLoading: true, error: null });
+
+      try {
+        await initializeDatabase();
+        let snapshot = await loadSnapshot();
+
+        // Only detect device currency on first launch when no saved preference exists
+        if (!snapshot.settings.onboardingCompleted && !snapshot.settings.currencyInitialized) {
+          const detectedCurrency = detectDeviceCurrencyCode(snapshot.currencies);
+          const updatedSettings = await repositories.settings.update({
+            currencyCode: detectedCurrency,
+            openingBalanceCurrencyCode: detectedCurrency,
+            currencyInitialized: true,
+          });
+          snapshot = { ...snapshot, settings: updatedSettings };
+        }
+
+        set({
+          isInitialized: true,
+          isLoading: false,
+          ...snapshot,
+        });
+
+        // Refresh currency catalog asynchronously if online without blocking startup
+        void get().refreshCurrencyCatalog();
+      } catch {
+        set({
+          isLoading: false,
+          error: 'Unable to initialize local database. Please restart the app.',
+        });
+      }
+    },
+
+    refreshData: async () => {
+      try {
+        const snapshot = await loadSnapshot();
+        set({ ...snapshot, error: null });
+      } catch {
+        set({ error: 'Unable to refresh local records.' });
+      }
+    },
+
+    refreshCurrencyCatalog: async () => {
+      try {
+        const currencies = await syncCurrencyCatalog(repositories.currencies);
+        set({ currencies });
+      } catch {
+        // Keep cached/fallback currencies silently when offline
+      }
+    },
+
+    refreshSyncMetadata: async () => {
+      try {
+        const [syncState, pendingOutboxCount, entitlement] = await Promise.all([
+          repositories.sync.getSyncState(),
+          repositories.sync.getPendingOutboxCount(),
+          loadCachedEntitlement(),
+        ]);
+        set({ syncState, pendingOutboxCount, entitlement });
+      } catch {
+        // Non-fatal
+      }
+    },
+
+    setTransactionFilters: (next) => {
+      set({ transactionFilters: next });
+    },
+
+    resetTransactionFilters: () => {
+      set({ transactionFilters: createDefaultTransactionFilters() });
+    },
+
+    setTransactionDraft: (draft) => {
+      set({ transactionDraft: draft });
+    },
+
+    patchTransactionDraft: (patch) => {
+      set((state) => {
+        if (!state.transactionDraft) return state;
+        return {
+          transactionDraft: {
+            ...state.transactionDraft,
+            ...patch,
+          },
+        };
+      });
+    },
+
+    clearTransactionDraft: () => {
+      set({ transactionDraft: null });
+    },
+
+    setOnboardingCurrencyCode: (code) => {
+      set({ onboardingCurrencyCode: code });
+    },
+
+    setOpeningBalanceDraft: (draft) => {
+      set({ openingBalanceDraft: draft });
+    },
+
+    completeOnboarding: async ({ currencyCode, openingBalanceMinor }) => {
+      set({ isLoading: true, error: null });
+      try {
+        const updated = await repositories.settings.update({
+          currencyCode,
+          openingBalanceMinor,
+          openingBalanceCurrencyCode: currencyCode,
+          onboardingCompleted: true,
+          currencyInitialized: true,
+        });
+        set({ settings: updated, onboardingCurrencyCode: null, isLoading: false });
+        void trackAnalyticsEvent('onboarding_completed', { currency_code: currencyCode });
+        scheduleBackgroundSync();
+      } catch (error) {
+        set({
+          isLoading: false,
+          error: error instanceof Error ? error.message : 'Unable to save setup preferences.',
+        });
+        throw error;
+      }
+    },
+
+    updateSettings: async (input) => {
+      set({ error: null });
+      try {
+        const updated = await repositories.settings.update(input);
+        const pendingOutboxCount = await repositories.sync.getPendingOutboxCount();
+        set({ settings: updated, pendingOutboxCount });
+        scheduleBackgroundSync();
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Unable to update settings.';
+        set({ error: message });
+        throw error;
+      }
+    },
+
+    createTransaction: async (input) => {
+      const created = await repositories.transactions.create(input);
+      const [transactions, pendingOutboxCount] = await Promise.all([
+        repositories.transactions.getAll(),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ transactions, pendingOutboxCount });
+
+      void trackAnalyticsEvent('transaction_created', {
+        tx_type: created.type,
+        currency_code: created.currencyCode,
+        has_tags: created.tagIds.length > 0,
+      });
+
+      if (created.type === 'expense') {
+        const { budgets, categories, currencies, notifications } = get();
+        const { year, month } = parseISODateParts(created.transactionDate);
+        const matchingBudgets = budgets.filter((b) => {
+          if (b.currencyCode.toUpperCase() !== created.currencyCode.toUpperCase()) return false;
+          if (b.categoryId !== null && b.categoryId !== created.categoryId) return false;
+          if (b.period === 'yearly') return b.year === year;
+          if (b.period === 'biweekly') return true;
+          return b.year === year && b.month === month;
+        });
+
+        for (const budget of matchingBudgets) {
+          const category = budget.categoryId
+            ? categories.find((c) => c.id === budget.categoryId) ?? null
+            : null;
+          const progress = calculateBudgetProgress({
+            budget,
+            transactions,
+            category,
+            referenceDate: created.transactionDate,
+          });
+          if (
+            created.transactionDate >= progress.periodStartDate &&
+            created.transactionDate <= progress.periodEndDate &&
+            progress.isExceeded
+          ) {
+            const dedupeKey = `budget_exceeded:${budget.id}:${progress.periodStartDate}`;
+            const alreadyNotified = notifications.some((n) => n.metadataJson === dedupeKey);
+            if (!alreadyNotified) {
+              const periodLabel =
+                budget.period === 'biweekly'
+                  ? 'Paycheck budget'
+                  : budget.period === 'yearly'
+                    ? 'Annual budget'
+                    : 'Monthly budget';
+              const label = category ? `${category.name} budget` : periodLabel;
+              await get().addNotification({
+                type: 'budget_alert',
+                title: `${label} exceeded`,
+                body: `Spending reached ${formatMoney(progress.spentMinor, budget.currencyCode, { catalog: currencies })} against ${formatMoney(budget.amountMinor, budget.currencyCode, { catalog: currencies })}.`,
+                metadataJson: dedupeKey,
+              });
+            }
+          }
+        }
+      }
+
+      scheduleBackgroundSync();
+      return created;
+    },
+
+    updateTransaction: async (id, input) => {
+      const updated = await repositories.transactions.update(id, input);
+      const [transactions, pendingOutboxCount] = await Promise.all([
+        repositories.transactions.getAll(),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ transactions, pendingOutboxCount });
+      scheduleBackgroundSync();
+      return updated;
+    },
+
+    deleteTransaction: async (id) => {
+      await repositories.transactions.delete(id);
+      const [transactions, pendingOutboxCount] = await Promise.all([
+        repositories.transactions.getAll(),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ transactions, pendingOutboxCount });
+      scheduleBackgroundSync();
+    },
+
+    createCategory: async (input) => {
+      const created = await repositories.categories.create(input);
+      const [categories, pendingOutboxCount] = await Promise.all([
+        repositories.categories.getAll({ includeArchived: true }),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ categories, pendingOutboxCount });
+      scheduleBackgroundSync();
+      return created;
+    },
+
+    updateCategory: async (id, input) => {
+      const updated = await repositories.categories.update(id, input);
+      const [categories, transactions, pendingOutboxCount] = await Promise.all([
+        repositories.categories.getAll({ includeArchived: true }),
+        repositories.transactions.getAll(),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ categories, transactions, pendingOutboxCount });
+      scheduleBackgroundSync();
+      return updated;
+    },
+
+    createTag: async (input) => {
+      const created = await repositories.tags.create(input);
+      const [tags, pendingOutboxCount] = await Promise.all([
+        repositories.tags.getAll({ includeArchived: true }),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ tags, pendingOutboxCount });
+      scheduleBackgroundSync();
+      return created;
+    },
+
+    updateTag: async (id, input) => {
+      const updated = await repositories.tags.update(id, input);
+      const [tags, pendingOutboxCount] = await Promise.all([
+        repositories.tags.getAll({ includeArchived: true }),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ tags, pendingOutboxCount });
+      scheduleBackgroundSync();
+      return updated;
+    },
+
+    deleteTag: async (id) => {
+      await repositories.tags.delete(id);
+      const [tags, transactions, pendingOutboxCount] = await Promise.all([
+        repositories.tags.getAll({ includeArchived: true }),
+        repositories.transactions.getAll(),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ tags, transactions, pendingOutboxCount });
+      scheduleBackgroundSync();
+    },
+
+    createPaymentMethod: async (input) => {
+      const created = await repositories.paymentMethods.create(input);
+      const [paymentMethods, pendingOutboxCount] = await Promise.all([
+        repositories.paymentMethods.getAll({ includeArchived: true }),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ paymentMethods, pendingOutboxCount });
+      scheduleBackgroundSync();
+      return created;
+    },
+
+    updatePaymentMethod: async (id, input) => {
+      const updated = await repositories.paymentMethods.update(id, input);
+      const [paymentMethods, pendingOutboxCount] = await Promise.all([
+        repositories.paymentMethods.getAll({ includeArchived: true }),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ paymentMethods, pendingOutboxCount });
+      scheduleBackgroundSync();
+      return updated;
+    },
+
+    deletePaymentMethod: async (id) => {
+      await repositories.paymentMethods.delete(id);
+      const [paymentMethods, transactions, pendingOutboxCount] = await Promise.all([
+        repositories.paymentMethods.getAll({ includeArchived: true }),
+        repositories.transactions.getAll(),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ paymentMethods, transactions, pendingOutboxCount });
+      scheduleBackgroundSync();
+    },
+
+    upsertBudget: async (input) => {
+      const saved = await repositories.budgets.upsert(input);
+      const [budgets, pendingOutboxCount] = await Promise.all([
+        repositories.budgets.getAll(),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ budgets, pendingOutboxCount });
+      scheduleBackgroundSync();
+      return saved;
+    },
+
+    deleteBudget: async (id) => {
+      await repositories.budgets.delete(id);
+      const [budgets, pendingOutboxCount] = await Promise.all([
+        repositories.budgets.getAll(),
+        repositories.sync.getPendingOutboxCount(),
+      ]);
+      set({ budgets, pendingOutboxCount });
+      scheduleBackgroundSync();
+    },
+
+    addNotification: async (input) => {
+      const created = await repositories.notifications.create(input);
+      const notifications = await repositories.notifications.getAll();
+      set({ notifications });
+      return created;
+    },
+
+    markNotificationRead: async (id) => {
+      await repositories.notifications.markAsRead(id);
+      const notifications = await repositories.notifications.getAll();
+      set({ notifications });
+    },
+
+    markNotificationUnread: async (id) => {
+      await repositories.notifications.markAsUnread(id);
+      const notifications = await repositories.notifications.getAll();
+      set({ notifications });
+    },
+
+    markAllNotificationsRead: async () => {
+      await repositories.notifications.markAllAsRead();
+      const notifications = await repositories.notifications.getAll();
+      set({ notifications });
+    },
+
+    deleteNotification: async (id) => {
+      await repositories.notifications.delete(id);
+      const notifications = await repositories.notifications.getAll();
+      set({ notifications });
+    },
+
+    restoreBackup: async (payload, mode) => {
+      const materialized = materializeBackupMediaAssets(payload);
+      const result = await repositories.backup.restoreFromBackup(materialized, mode);
+      await repositories.notifications.create({
+        type: 'backup',
+        title: 'Backup restored',
+        body: `Restored ${result.transactionsInserted} transaction(s) in ${mode} mode.`,
+      });
+      const snapshot = await loadSnapshot();
+      set({ ...snapshot, error: null });
+      void trackAnalyticsEvent('backup_completed', { mode });
+      scheduleBackgroundSync();
+      return result;
+    },
+
+    clearAllLocalData: async () => {
+      set({ isLoading: true, error: null });
+      try {
+        await repositories.backup.clearAllData();
+        clearAllStoredImages();
+        let snapshot = await loadSnapshot();
         const detectedCurrency = detectDeviceCurrencyCode(snapshot.currencies);
         const updatedSettings = await repositories.settings.update({
           currencyCode: detectedCurrency,
@@ -234,327 +698,192 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
           currencyInitialized: true,
         });
         snapshot = { ...snapshot, settings: updatedSettings };
-      }
 
-      set({
-        isInitialized: true,
-        isLoading: false,
-        ...snapshot,
-      });
-
-      // Refresh currency metadata asynchronously if online without blocking startup
-      void get().refreshCurrencyCatalog();
-    } catch {
-      set({
-        isLoading: false,
-        error: 'Unable to initialize local database. Please restart the app.',
-      });
-    }
-  },
-
-  refreshData: async () => {
-    try {
-      const snapshot = await loadSnapshot();
-      set({ ...snapshot, error: null });
-    } catch {
-      set({ error: 'Unable to refresh local records.' });
-    }
-  },
-
-  refreshCurrencyCatalog: async () => {
-    try {
-      const currencies = await syncCurrencyCatalog(repositories.currencies);
-      set({ currencies });
-    } catch {
-      // Keep cached/fallback currencies silently when offline
-    }
-  },
-
-  setTransactionFilters: (next) => {
-    set({ transactionFilters: next });
-  },
-
-  resetTransactionFilters: () => {
-    set({ transactionFilters: createDefaultTransactionFilters() });
-  },
-
-  setTransactionDraft: (draft) => {
-    set({ transactionDraft: draft });
-  },
-
-  patchTransactionDraft: (patch) => {
-    set((state) => {
-      if (!state.transactionDraft) return state;
-      return {
-        transactionDraft: {
-          ...state.transactionDraft,
-          ...patch,
-        },
-      };
-    });
-  },
-
-  clearTransactionDraft: () => {
-    set({ transactionDraft: null });
-  },
-
-  setOnboardingCurrencyCode: (code) => {
-    set({ onboardingCurrencyCode: code });
-  },
-
-  setOpeningBalanceDraft: (draft) => {
-    set({ openingBalanceDraft: draft });
-  },
-
-  completeOnboarding: async ({ currencyCode, openingBalanceMinor }) => {
-    set({ isLoading: true, error: null });
-    try {
-      const updated = await repositories.settings.update({
-        currencyCode,
-        openingBalanceMinor,
-        openingBalanceCurrencyCode: currencyCode,
-        onboardingCompleted: true,
-        currencyInitialized: true,
-      });
-      set({ settings: updated, onboardingCurrencyCode: null, isLoading: false });
-    } catch (error) {
-      set({
-        isLoading: false,
-        error: error instanceof Error ? error.message : 'Unable to save setup preferences.',
-      });
-      throw error;
-    }
-  },
-
-  updateSettings: async (input) => {
-    set({ error: null });
-    try {
-      const updated = await repositories.settings.update(input);
-      set({ settings: updated });
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Unable to update settings.';
-      set({ error: message });
-      throw error;
-    }
-  },
-
-  createTransaction: async (input) => {
-    const created = await repositories.transactions.create(input);
-    const transactions = await repositories.transactions.getAll();
-    set({ transactions });
-
-    if (created.type === 'expense') {
-      const { budgets, categories, currencies, notifications } = get();
-      const { year, month } = parseISODateParts(created.transactionDate);
-      const matchingBudgets = budgets.filter((b) => {
-        if (b.currencyCode.toUpperCase() !== created.currencyCode.toUpperCase()) return false;
-        if (b.categoryId !== null && b.categoryId !== created.categoryId) return false;
-        if (b.period === 'yearly') return b.year === year;
-        if (b.period === 'biweekly') return true;
-        return b.year === year && b.month === month;
-      });
-
-      for (const budget of matchingBudgets) {
-        const category = budget.categoryId
-          ? categories.find((c) => c.id === budget.categoryId) ?? null
-          : null;
-        const progress = calculateBudgetProgress({
-          budget,
-          transactions,
-          category,
-          referenceDate: created.transactionDate,
+        set({
+          ...snapshot,
+          transactionDraft: null,
+          onboardingCurrencyCode: null,
+          openingBalanceDraft: null,
+          transactionFilters: createDefaultTransactionFilters(),
+          isLoading: false,
         });
-        if (
-          created.transactionDate >= progress.periodStartDate &&
-          created.transactionDate <= progress.periodEndDate &&
-          progress.isExceeded
-        ) {
-          const dedupeKey = `budget_exceeded:${budget.id}:${progress.periodStartDate}`;
-          const alreadyNotified = notifications.some((n) => n.metadataJson === dedupeKey);
-          if (!alreadyNotified) {
-            const periodLabel =
-              budget.period === 'biweekly'
-                ? 'Paycheck budget'
-                : budget.period === 'yearly'
-                  ? 'Annual budget'
-                  : 'Monthly budget';
-            const label = category ? `${category.name} budget` : periodLabel;
-            await get().addNotification({
-              type: 'budget_alert',
-              title: `${label} exceeded`,
-              body: `Spending reached ${formatMoney(progress.spentMinor, budget.currencyCode, { catalog: currencies })} against ${formatMoney(budget.amountMinor, budget.currencyCode, { catalog: currencies })}.`,
-              metadataJson: dedupeKey,
-            });
-          }
-        }
+      } catch {
+        set({
+          isLoading: false,
+          error: 'Unable to clear local data.',
+        });
+        throw new Error('Unable to clear local data.');
       }
-    }
+    },
 
-    return created;
-  },
+    applySignedInSession: async (profile) => {
+      if (!get().isInitialized) {
+        await get().initializeApp();
+      }
+      const linkCheck = await inspectAccountLinkState(profile.userId);
+      if (linkCheck.status === 'account_mismatch') {
+        await repositories.sync.updateSyncState({
+          syncStatus: 'needs_account_switch',
+        });
+        const syncState = await repositories.sync.getSyncState();
+        set({
+          authUser: profile,
+          syncState,
+          accountSwitchConflict: {
+            newProfile: profile,
+            previousUserId: linkCheck.previousUserId,
+            previousUserEmail: linkCheck.previousUserEmail,
+            hasLocalData: linkCheck.hasLocalData,
+            pendingOutboxCount: linkCheck.pendingOutboxCount,
+          },
+        });
+        return;
+      }
 
-  updateTransaction: async (id, input) => {
-    const updated = await repositories.transactions.update(id, input);
-    const transactions = await repositories.transactions.getAll();
-    set({ transactions });
-    return updated;
-  },
+      const fallbackPatch = buildGoogleFallbackProfilePatch(get().settings, profile);
+      await repositories.settings.update(fallbackPatch);
 
-  deleteTransaction: async (id) => {
-    await repositories.transactions.delete(id);
-    const transactions = await repositories.transactions.getAll();
-    set({ transactions });
-  },
+      set({ authUser: profile, accountSwitchConflict: null });
 
-  createCategory: async (input) => {
-    const created = await repositories.categories.create(input);
-    const categories = await repositories.categories.getAll({ includeArchived: true });
-    set({ categories });
-    return created;
-  },
+      if (linkCheck.status === 'needs_link') {
+        await linkLocalWorkspaceToUser({
+          userId: profile.userId,
+          email: profile.email,
+        });
+      } else {
+        await runSyncCycle(profile.userId);
+      }
 
-  updateCategory: async (id, input) => {
-    const updated = await repositories.categories.update(id, input);
-    const [categories, transactions] = await Promise.all([
-      repositories.categories.getAll({ includeArchived: true }),
-      repositories.transactions.getAll(),
-    ]);
-    set({ categories, transactions });
-    return updated;
-  },
+      const [snapshot, entitlement] = await Promise.all([
+        loadSnapshot(),
+        refreshUserEntitlement(profile.userId),
+      ]);
+      await repositories.sync.saveEntitlementCache(entitlement);
+      set({ ...snapshot, entitlement, authUser: profile });
+    },
 
-  createTag: async (input) => {
-    const created = await repositories.tags.create(input);
-    const tags = await repositories.tags.getAll({ includeArchived: true });
-    set({ tags });
-    return created;
-  },
+    signInWithGoogle: async () => {
+      if (get().authBusy) {
+        return { status: 'error', message: 'Sign-in is already in progress.' };
+      }
+      set({ authBusy: true });
+      try {
+        const result = await signInWithGoogleAccount();
+        if (result.status === 'success') {
+          await get().applySignedInSession(result.profile);
+          void trackAnalyticsEvent('google_sign_in_completed');
+        }
+        return result;
+      } finally {
+        set({ authBusy: false });
+      }
+    },
 
-  updateTag: async (id, input) => {
-    const updated = await repositories.tags.update(id, input);
-    const tags = await repositories.tags.getAll({ includeArchived: true });
-    set({ tags });
-    return updated;
-  },
+    confirmAccountSwitchReplace: async () => {
+      const conflict = get().accountSwitchConflict;
+      if (!conflict) return;
 
-  deleteTag: async (id) => {
-    await repositories.tags.delete(id);
-    const [tags, transactions] = await Promise.all([
-      repositories.tags.getAll({ includeArchived: true }),
-      repositories.transactions.getAll(),
-    ]);
-    set({ tags, transactions });
-  },
+      set({ authBusy: true });
+      try {
+        await switchWorkspaceAccountAndSync({
+          userId: conflict.newProfile.userId,
+          email: conflict.newProfile.email,
+        });
+        const currentSettings = await repositories.settings.get();
+        const fallbackPatch = buildGoogleFallbackProfilePatch(
+          currentSettings,
+          conflict.newProfile,
+        );
+        await repositories.settings.update({
+          ...fallbackPatch,
+          onboardingCompleted: true,
+        });
 
-  createPaymentMethod: async (input) => {
-    const created = await repositories.paymentMethods.create(input);
-    const paymentMethods = await repositories.paymentMethods.getAll({ includeArchived: true });
-    set({ paymentMethods });
-    return created;
-  },
+        const [snapshot, entitlement] = await Promise.all([
+          loadSnapshot(),
+          refreshUserEntitlement(conflict.newProfile.userId),
+        ]);
+        set({
+          ...snapshot,
+          entitlement,
+          authUser: conflict.newProfile,
+          accountSwitchConflict: null,
+        });
+      } finally {
+        set({ authBusy: false });
+      }
+    },
 
-  updatePaymentMethod: async (id, input) => {
-    const updated = await repositories.paymentMethods.update(id, input);
-    const paymentMethods = await repositories.paymentMethods.getAll({ includeArchived: true });
-    set({ paymentMethods });
-    return updated;
-  },
+    cancelAccountSwitch: async () => {
+      set({ authBusy: true });
+      try {
+        await signOutGoogleAndSupabase();
+        const [syncState, pendingOutboxCount] = await Promise.all([
+          repositories.sync.updateSyncState({
+            syncStatus: 'idle',
+            lastError: null,
+          }),
+          repositories.sync.getPendingOutboxCount(),
+        ]);
+        set({
+          authUser: null,
+          accountSwitchConflict: null,
+          syncState,
+          pendingOutboxCount,
+        });
+      } finally {
+        set({ authBusy: false });
+      }
+    },
 
-  deletePaymentMethod: async (id) => {
-    await repositories.paymentMethods.delete(id);
-    const [paymentMethods, transactions] = await Promise.all([
-      repositories.paymentMethods.getAll({ includeArchived: true }),
-      repositories.transactions.getAll(),
-    ]);
-    set({ paymentMethods, transactions });
-  },
+    syncNow: async () => {
+      const { authUser, accountSwitchConflict, syncState } = get();
+      if (!authUser || accountSwitchConflict) {
+        return { status: 'skipped', pushedCount: 0, pulledCount: 0 };
+      }
+      if (syncState.linkedUserId && syncState.linkedUserId !== authUser.userId) {
+        return { status: 'skipped', pushedCount: 0, pulledCount: 0 };
+      }
 
-  upsertBudget: async (input) => {
-    const saved = await repositories.budgets.upsert(input);
-    const budgets = await repositories.budgets.getAll();
-    set({ budgets });
-    return saved;
-  },
+      set((state) => ({
+        syncState: { ...state.syncState, syncStatus: 'syncing', lastError: null },
+      }));
+      void trackAnalyticsEvent('sync_started');
 
-  deleteBudget: async (id) => {
-    await repositories.budgets.delete(id);
-    const budgets = await repositories.budgets.getAll();
-    set({ budgets });
-  },
+      const result = await runSyncCycle(authUser.userId);
+      const snapshot = await loadSnapshot();
+      set({ ...snapshot });
 
-  addNotification: async (input) => {
-    const created = await repositories.notifications.create(input);
-    const notifications = await repositories.notifications.getAll();
-    set({ notifications });
-    return created;
-  },
+      if (result.status === 'synced') {
+        void trackAnalyticsEvent('sync_completed', {
+          pushed_count: result.pushedCount,
+          pulled_count: result.pulledCount,
+        });
+      } else if (result.status === 'error') {
+        void trackAnalyticsEvent('sync_failed');
+      }
 
-  markNotificationRead: async (id) => {
-    await repositories.notifications.markAsRead(id);
-    const notifications = await repositories.notifications.getAll();
-    set({ notifications });
-  },
+      return result;
+    },
 
-  markNotificationUnread: async (id) => {
-    await repositories.notifications.markAsUnread(id);
-    const notifications = await repositories.notifications.getAll();
-    set({ notifications });
-  },
-
-  markAllNotificationsRead: async () => {
-    await repositories.notifications.markAllAsRead();
-    const notifications = await repositories.notifications.getAll();
-    set({ notifications });
-  },
-
-  deleteNotification: async (id) => {
-    await repositories.notifications.delete(id);
-    const notifications = await repositories.notifications.getAll();
-    set({ notifications });
-  },
-
-  restoreBackup: async (payload, mode) => {
-    const materialized = materializeBackupMediaAssets(payload);
-    const result = await repositories.backup.restoreFromBackup(materialized, mode);
-    await repositories.notifications.create({
-      type: 'backup',
-      title: 'Backup restored',
-      body: `Restored ${result.transactionsInserted} transaction(s) in ${mode} mode.`,
-    });
-    const snapshot = await loadSnapshot();
-    set({ ...snapshot, error: null });
-    return result;
-  },
-
-  clearAllLocalData: async () => {
-    set({ isLoading: true, error: null });
-    try {
-      await repositories.backup.clearAllData();
-      clearAllStoredImages();
-      let snapshot = await loadSnapshot();
-      const detectedCurrency = detectDeviceCurrencyCode(snapshot.currencies);
-      const updatedSettings = await repositories.settings.update({
-        currencyCode: detectedCurrency,
-        openingBalanceCurrencyCode: detectedCurrency,
-        currencyInitialized: true,
-      });
-      snapshot = { ...snapshot, settings: updatedSettings };
-
-      set({
-        ...snapshot,
-        transactionDraft: null,
-        onboardingCurrencyCode: null,
-        openingBalanceDraft: null,
-        transactionFilters: createDefaultTransactionFilters(),
-        isLoading: false,
-      });
-    } catch {
-      set({
-        isLoading: false,
-        error: 'Unable to clear local data.',
-      });
-      throw new Error('Unable to clear local data.');
-    }
-  },
-}));
+    signOutCloud: async () => {
+      set({ authBusy: true });
+      try {
+        await signOutGoogleAndSupabase();
+        const entitlement = await refreshUserEntitlement(null);
+        const syncState = await repositories.sync.updateSyncState({
+          syncStatus: 'idle',
+          lastError: null,
+        });
+        set({
+          authUser: null,
+          accountSwitchConflict: null,
+          entitlement,
+          syncState,
+        });
+      } finally {
+        set({ authBusy: false });
+      }
+    },
+  };
+});

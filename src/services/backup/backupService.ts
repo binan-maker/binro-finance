@@ -82,6 +82,15 @@ export async function exportJsonBackupFile(appVersion: string): Promise<{
     }
   }
 
+  for (const pm of payload.paymentMethods ?? []) {
+    if (pm.imageUri && isLocalRelativeImagePath(pm.imageUri)) {
+      const asset = await readStoredImageAsset(pm.imageUri);
+      if (asset) {
+        mediaAssets[pm.imageUri] = asset;
+      }
+    }
+  }
+
   if (payload.settings.profileAvatar && isLocalRelativeImagePath(payload.settings.profileAvatar)) {
     const asset = await readStoredImageAsset(payload.settings.profileAvatar);
     if (asset) {
@@ -122,6 +131,14 @@ export function materializeBackupMediaAssets(payload: BackupPayload): BackupPayl
     return { ...cat, imageUri: null };
   });
 
+  const paymentMethods = payload.paymentMethods?.map((pm) => {
+    if (!pm.imageUri) return pm;
+    if (isLocalRelativeImagePath(pm.imageUri) && restoredKeys.has(pm.imageUri)) {
+      return pm;
+    }
+    return { ...pm, imageUri: null };
+  });
+
   const profileAvatar =
     payload.settings.profileAvatar &&
     isLocalRelativeImagePath(payload.settings.profileAvatar)
@@ -137,6 +154,7 @@ export function materializeBackupMediaAssets(payload: BackupPayload): BackupPayl
       profileAvatar,
     },
     categories,
+    ...(paymentMethods !== undefined ? { paymentMethods } : {}),
   };
 }
 

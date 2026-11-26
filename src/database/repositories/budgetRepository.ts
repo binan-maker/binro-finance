@@ -6,6 +6,7 @@ import { isValidISODate, parseISODateParts } from '@/utils/date';
 import { generateUUID } from '@/utils/uuid';
 
 import { mapBudgetRow } from './mappers';
+import { enqueueOutboxChangeIfLinked } from './syncRepository';
 
 export class SQLiteBudgetRepository implements IBudgetRepository {
   constructor(private readonly getDb: () => Promise<SqlDatabaseAdapter>) {}
@@ -22,7 +23,7 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
     const fallbackCurrency = await this.getFallbackCurrency(db);
     const rows = await db.getAllAsync<BudgetRow>(
       `SELECT * FROM budgets
-       WHERE period = 'monthly' AND month = ? AND year = ?
+       WHERE period = 'monthly' AND month = ? AND year = ? AND deleted_at IS NULL
        ORDER BY CASE WHEN category_id IS NULL THEN 0 ELSE 1 END, created_at ASC`,
       month,
       year,
@@ -34,7 +35,7 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
     const db = await this.getDb();
     const fallbackCurrency = await this.getFallbackCurrency(db);
     const rows = await db.getAllAsync<BudgetRow>(
-      'SELECT * FROM budgets ORDER BY year DESC, month DESC, created_at ASC',
+      'SELECT * FROM budgets WHERE deleted_at IS NULL ORDER BY year DESC, month DESC, created_at ASC',
     );
     return rows.map((row) => mapBudgetRow(row, fallbackCurrency));
   }
@@ -93,7 +94,7 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
 
       if (input.id) {
         existing = await db.getFirstAsync<BudgetRow>(
-          'SELECT * FROM budgets WHERE id = ? LIMIT 1',
+          'SELECT * FROM budgets WHERE id = ? AND deleted_at IS NULL LIMIT 1',
           input.id,
         );
       }
@@ -107,6 +108,7 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
                    AND COALESCE(start_date, '') = COALESCE(?, '')
                    AND UPPER(COALESCE(currency_code, ?)) = UPPER(?)
                    AND category_id IS NULL
+                   AND deleted_at IS NULL
                  LIMIT 1`,
                 period,
                 normalizedMonth,
@@ -121,6 +123,7 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
                    AND COALESCE(start_date, '') = COALESCE(?, '')
                    AND UPPER(COALESCE(currency_code, ?)) = UPPER(?)
                    AND category_id = ?
+                   AND deleted_at IS NULL
                  LIMIT 1`,
                 period,
                 normalizedMonth,
@@ -150,8 +153,8 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
       } else {
         await db.runAsync(
           `INSERT INTO budgets (
-            id, amount_minor, currency_code, period, month, year, start_date, category_id, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            id, amount_minor, currency_code, period, month, year, start_date, category_id, deleted_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
           targetId,
           input.amountMinor,
           currencyCode,
@@ -164,10 +167,17 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
           now,
         );
       }
+
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'budget',
+        entityId: targetId,
+        operation: 'upsert',
+        localUpdatedAt: now,
+      });
     });
 
     const row = await db.getFirstAsync<BudgetRow>(
-      'SELECT * FROM budgets WHERE id = ? LIMIT 1',
+      'SELECT * FROM budgets WHERE id = ? AND deleted_at IS NULL LIMIT 1',
       targetId,
     );
     if (!row) {
@@ -178,6 +188,20 @@ export class SQLiteBudgetRepository implements IBudgetRepository {
 
   async delete(id: string): Promise<void> {
     const db = await this.getDb();
-    await db.runAsync('DELETE FROM budgets WHERE id = ?', id);
+    const now = new Date().toISOString();
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        'UPDATE budgets SET deleted_at = ?, updated_at = ? WHERE id = ?',
+        now,
+        now,
+        id,
+      );
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'budget',
+        entityId: id,
+        operation: 'delete',
+        localUpdatedAt: now,
+      });
+    });
   }
 }

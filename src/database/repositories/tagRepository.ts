@@ -1,16 +1,25 @@
 import type { SqlDatabaseAdapter } from '@/database/driver';
-import type { CreateTagInput, ITagRepository, TagRow, UpdateTagInput } from '@/types/database';
+import type {
+  CreateTagInput,
+  ITagRepository,
+  TagRow,
+  TransactionTagRow,
+  UpdateTagInput,
+} from '@/types/database';
 import type { Tag } from '@/types/models';
 import { generateUUID } from '@/utils/uuid';
 
 import { mapTagRow } from './mappers';
+import { enqueueOutboxChangeIfLinked } from './syncRepository';
 
 export class SQLiteTagRepository implements ITagRepository {
   constructor(private readonly getDb: () => Promise<SqlDatabaseAdapter>) {}
 
   async getAll(options?: { includeArchived?: boolean }): Promise<Tag[]> {
     const db = await this.getDb();
-    const whereClause = options?.includeArchived ? '' : 'WHERE COALESCE(is_archived, 0) = 0';
+    const whereClause = options?.includeArchived
+      ? 'WHERE deleted_at IS NULL'
+      : 'WHERE COALESCE(is_archived, 0) = 0 AND deleted_at IS NULL';
     const rows = await db.getAllAsync<TagRow>(
       `SELECT * FROM tags ${whereClause} ORDER BY name ASC`,
     );
@@ -19,7 +28,10 @@ export class SQLiteTagRepository implements ITagRepository {
 
   async getById(id: string): Promise<Tag | null> {
     const db = await this.getDb();
-    const row = await db.getFirstAsync<TagRow>('SELECT * FROM tags WHERE id = ? LIMIT 1', id);
+    const row = await db.getFirstAsync<TagRow>(
+      'SELECT * FROM tags WHERE id = ? AND deleted_at IS NULL LIMIT 1',
+      id,
+    );
     return row ? mapTagRow(row) : null;
   }
 
@@ -31,7 +43,7 @@ export class SQLiteTagRepository implements ITagRepository {
 
     const db = await this.getDb();
     const duplicate = await db.getFirstAsync<TagRow>(
-      'SELECT * FROM tags WHERE LOWER(name) = LOWER(?) LIMIT 1',
+      'SELECT * FROM tags WHERE LOWER(name) = LOWER(?) AND deleted_at IS NULL LIMIT 1',
       trimmedName,
     );
     if (duplicate) {
@@ -48,15 +60,23 @@ export class SQLiteTagRepository implements ITagRepository {
     const id = input.id ?? generateUUID();
     const now = new Date().toISOString();
 
-    await db.runAsync(
-      `INSERT INTO tags (id, name, color, is_archived, created_at, updated_at)
-       VALUES (?, ?, ?, 0, ?, ?)`,
-      id,
-      trimmedName,
-      input.color || '#10B981',
-      now,
-      now,
-    );
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO tags (id, name, color, is_archived, deleted_at, created_at, updated_at)
+         VALUES (?, ?, ?, 0, NULL, ?, ?)`,
+        id,
+        trimmedName,
+        input.color || '#10B981',
+        now,
+        now,
+      );
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'tag',
+        entityId: id,
+        operation: 'upsert',
+        localUpdatedAt: now,
+      });
+    });
 
     const created = await this.getById(id);
     if (!created) {
@@ -79,7 +99,7 @@ export class SQLiteTagRepository implements ITagRepository {
     const db = await this.getDb();
     if (nextName.toLowerCase() !== existing.name.toLowerCase()) {
       const duplicate = await db.getFirstAsync<Pick<TagRow, 'id'>>(
-        'SELECT id FROM tags WHERE LOWER(name) = LOWER(?) AND id != ? LIMIT 1',
+        'SELECT id FROM tags WHERE LOWER(name) = LOWER(?) AND id != ? AND deleted_at IS NULL LIMIT 1',
         nextName,
         id,
       );
@@ -91,14 +111,23 @@ export class SQLiteTagRepository implements ITagRepository {
     const now = new Date().toISOString();
     const nextArchived =
       input.isArchived !== undefined ? input.isArchived : existing.isArchived;
-    await db.runAsync(
-      'UPDATE tags SET name = ?, color = ?, is_archived = ?, updated_at = ? WHERE id = ?',
-      nextName,
-      input.color ?? existing.color,
-      nextArchived ? 1 : 0,
-      now,
-      id,
-    );
+
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        'UPDATE tags SET name = ?, color = ?, is_archived = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
+        nextName,
+        input.color ?? existing.color,
+        nextArchived ? 1 : 0,
+        now,
+        id,
+      );
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'tag',
+        entityId: id,
+        operation: 'upsert',
+        localUpdatedAt: now,
+      });
+    });
 
     const updated = await this.getById(id);
     if (!updated) {
@@ -109,6 +138,39 @@ export class SQLiteTagRepository implements ITagRepository {
 
   async delete(id: string): Promise<void> {
     const db = await this.getDb();
-    await db.runAsync('DELETE FROM tags WHERE id = ?', id);
+    const now = new Date().toISOString();
+    await db.withTransactionAsync(async () => {
+      const affectedLinks = await db.getAllAsync<Pick<TransactionTagRow, 'transaction_id'>>(
+        'SELECT transaction_id FROM transaction_tags WHERE tag_id = ? AND deleted_at IS NULL',
+        id,
+      );
+      await db.runAsync(
+        'UPDATE transaction_tags SET deleted_at = ?, updated_at = ? WHERE tag_id = ? AND deleted_at IS NULL',
+        now,
+        now,
+        id,
+      );
+      for (const link of affectedLinks) {
+        await enqueueOutboxChangeIfLinked(db, {
+          entityType: 'transaction_tag',
+          entityId: `${link.transaction_id}:${id}`,
+          operation: 'delete',
+          localUpdatedAt: now,
+        });
+      }
+
+      await db.runAsync(
+        'UPDATE tags SET deleted_at = ?, updated_at = ? WHERE id = ?',
+        now,
+        now,
+        id,
+      );
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'tag',
+        entityId: id,
+        operation: 'delete',
+        localUpdatedAt: now,
+      });
+    });
   }
 }

@@ -7,6 +7,7 @@ import { SQLiteCurrencyRepository } from './currencyRepository';
 import { SQLiteNotificationRepository } from './notificationRepository';
 import { SQLitePaymentMethodRepository } from './paymentMethodRepository';
 import { SQLiteSettingsRepository } from './settingsRepository';
+import { SQLiteSyncRepository } from './syncRepository';
 import { SQLiteTagRepository } from './tagRepository';
 import { SQLiteTransactionRepository } from './transactionRepository';
 
@@ -21,6 +22,7 @@ export function createRepositories(getDb: () => Promise<SqlDatabaseAdapter>) {
     settings: new SQLiteSettingsRepository(getDb),
     notifications: new SQLiteNotificationRepository(getDb),
     backup: new SQLiteBackupRepository(getDb),
+    sync: new SQLiteSyncRepository(getDb),
   };
 }
 
@@ -32,6 +34,7 @@ export {
   SQLiteNotificationRepository,
   SQLitePaymentMethodRepository,
   SQLiteSettingsRepository,
+  SQLiteSyncRepository,
   SQLiteTagRepository,
   SQLiteTransactionRepository,
 };

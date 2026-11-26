@@ -1,6 +1,6 @@
 import { isValidIsoCurrencyCode, type CurrencyConfig } from '@/constants/currencies';
 import type { BackupPayload } from '@/types/database';
-import type { TransactionType } from '@/types/models';
+import type { GenderOption, TransactionType } from '@/types/models';
 
 import { isValidISODate } from './date';
 import { parseMajorToMinor } from './money';
@@ -131,6 +131,13 @@ export function validatePaymentMethodName(name: string): ValidationResult<string
 
 const VALID_THEMES = ['system', 'light', 'dark'] as const;
 const VALID_DATE_FORMATS = ['YYYY-MM-DD', 'DD/MM/YYYY', 'MM/DD/YYYY', 'DD MMM YYYY'] as const;
+const VALID_GENDERS: readonly GenderOption[] = [
+  'prefer_not_to_say',
+  'female',
+  'male',
+  'non_binary',
+  'other',
+];
 
 function isNonEmptyString(val: unknown): val is string {
   return typeof val === 'string' && val.trim().length > 0;
@@ -147,7 +154,8 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
     (candidate.schemaVersion !== 1 &&
       candidate.schemaVersion !== 2 &&
       candidate.schemaVersion !== 3 &&
-      candidate.schemaVersion !== 4)
+      candidate.schemaVersion !== 4 &&
+      candidate.schemaVersion !== 5)
   ) {
     return { valid: false, error: 'Unsupported or missing backup schema version.' };
   }
@@ -180,6 +188,22 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
     typeof settings.onboardingCompleted !== 'boolean'
   ) {
     return { valid: false, error: 'Backup settings contain invalid preferences.' };
+  }
+
+  if (
+    settings.gender !== undefined &&
+    settings.gender !== null &&
+    !VALID_GENDERS.includes(settings.gender as GenderOption)
+  ) {
+    return { valid: false, error: 'Backup settings contain an invalid gender value.' };
+  }
+
+  if (
+    settings.dateOfBirth !== undefined &&
+    settings.dateOfBirth !== null &&
+    (typeof settings.dateOfBirth !== 'string' || !isValidISODate(settings.dateOfBirth))
+  ) {
+    return { valid: false, error: 'Backup settings contain an invalid date of birth.' };
   }
 
   if (
@@ -246,6 +270,7 @@ export function validateBackupPayload(raw: unknown): ValidationResult<BackupPayl
         !isNonEmptyString(rec.id) ||
         !isNonEmptyString(rec.name) ||
         typeof rec.icon !== 'string' ||
+        (rec.imageUri !== undefined && rec.imageUri !== null && typeof rec.imageUri !== 'string') ||
         typeof rec.isBuiltin !== 'boolean' ||
         typeof rec.isArchived !== 'boolean' ||
         !isNonEmptyString(rec.createdAt) ||

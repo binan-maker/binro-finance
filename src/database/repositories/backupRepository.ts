@@ -5,6 +5,7 @@ import {
   seedDefaultPaymentMethods,
   seedV2DefaultCategoriesSafely,
 } from '@/database/migrations/002_v2_redesign';
+import { isLocalRelativeImagePath } from '@/services/images/mediaPathUtils';
 import type {
   BackupPayload,
   BudgetRow,
@@ -13,6 +14,7 @@ import type {
   NotificationRow,
   PaymentMethodRow,
   RestoreResult,
+  SyncStateRow,
   TagRow,
   TransactionRow,
   TransactionTagRow,
@@ -27,26 +29,37 @@ import {
   mapTransactionRow,
 } from './mappers';
 import { SQLiteSettingsRepository } from './settingsRepository';
+import { SQLiteSyncRepository, trackLocalMediaPendingUpload } from './syncRepository';
 
 export class SQLiteBackupRepository implements IBackupRepository {
   private readonly settingsRepo: SQLiteSettingsRepository;
+  private readonly syncRepo: SQLiteSyncRepository;
 
   constructor(private readonly getDb: () => Promise<SqlDatabaseAdapter>) {
     this.settingsRepo = new SQLiteSettingsRepository(getDb);
+    this.syncRepo = new SQLiteSyncRepository(getDb);
   }
 
   async exportAll(appVersion: string): Promise<BackupPayload> {
     const db = await this.getDb();
     const settings = await this.settingsRepo.get();
-    const categoryRows = await db.getAllAsync<CategoryRow>('SELECT * FROM categories');
-    const tagRows = await db.getAllAsync<TagRow>('SELECT * FROM tags ORDER BY name ASC');
-    const pmRows = await db.getAllAsync<PaymentMethodRow>('SELECT * FROM payment_methods');
-    const budgetRows = await db.getAllAsync<BudgetRow>('SELECT * FROM budgets');
+    const categoryRows = await db.getAllAsync<CategoryRow>(
+      'SELECT * FROM categories WHERE deleted_at IS NULL',
+    );
+    const tagRows = await db.getAllAsync<TagRow>(
+      'SELECT * FROM tags WHERE deleted_at IS NULL ORDER BY name ASC',
+    );
+    const pmRows = await db.getAllAsync<PaymentMethodRow>(
+      'SELECT * FROM payment_methods WHERE deleted_at IS NULL',
+    );
+    const budgetRows = await db.getAllAsync<BudgetRow>(
+      'SELECT * FROM budgets WHERE deleted_at IS NULL',
+    );
     const transactionRows = await db.getAllAsync<TransactionRow>(
-      'SELECT * FROM transactions ORDER BY transaction_date DESC, created_at DESC',
+      'SELECT * FROM transactions WHERE deleted_at IS NULL ORDER BY transaction_date DESC, created_at DESC',
     );
     const txTagRows = await db.getAllAsync<TransactionTagRow>(
-      'SELECT transaction_id, tag_id FROM transaction_tags',
+      'SELECT transaction_id, tag_id FROM transaction_tags WHERE deleted_at IS NULL',
     );
     const notificationRows = await db.getAllAsync<NotificationRow>(
       'SELECT * FROM notifications ORDER BY created_at DESC',
@@ -60,7 +73,7 @@ export class SQLiteBackupRepository implements IBackupRepository {
     }
 
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       exportedAt: new Date().toISOString(),
       appVersion,
       settings,
@@ -99,9 +112,12 @@ export class SQLiteBackupRepository implements IBackupRepository {
     )
       .trim()
       .toUpperCase();
+    const now = new Date().toISOString();
 
     await db.withTransactionAsync(async () => {
       if (mode === 'replace') {
+        await db.runAsync('DELETE FROM media_sync_map');
+        await db.runAsync('DELETE FROM sync_outbox');
         await db.runAsync('DELETE FROM transaction_tags');
         await db.runAsync('DELETE FROM transactions');
         await db.runAsync('DELETE FROM budgets');
@@ -115,8 +131,10 @@ export class SQLiteBackupRepository implements IBackupRepository {
           `INSERT INTO app_settings (
             id, currency_code, opening_balance_minor, opening_balance_currency_code,
             theme, date_format, onboarding_completed, profile_name, profile_bio,
-            profile_avatar, currency_initialized, show_home_budget_shortcut
-          ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            profile_avatar, currency_initialized, show_home_budget_shortcut,
+            gender, date_of_birth, google_name, google_email, google_avatar_url,
+            profile_completed_at, updated_at
+          ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           backupDefaultCurrency,
           payload.settings.openingBalanceMinor,
           backupOpeningCurrency,
@@ -128,12 +146,27 @@ export class SQLiteBackupRepository implements IBackupRepository {
           payload.settings.profileAvatar ?? null,
           1,
           payload.settings.showHomeBudgetShortcut ? 1 : 0,
+          payload.settings.gender ?? null,
+          payload.settings.dateOfBirth ?? null,
+          payload.settings.googleName ?? null,
+          payload.settings.googleEmail ?? null,
+          payload.settings.googleAvatarUrl ?? null,
+          payload.settings.profileCompletedAt ?? null,
+          payload.settings.updatedAt ?? now,
         );
+
+        if (payload.settings.profileAvatar && isLocalRelativeImagePath(payload.settings.profileAvatar)) {
+          await trackLocalMediaPendingUpload(db, {
+            localPath: payload.settings.profileAvatar,
+            entityType: 'profile',
+            entityId: 'self',
+          });
+        }
       }
 
       // 1. Categories (root categories first, then subcategories)
       const existingRows = await db.getAllAsync<Pick<CategoryRow, 'id' | 'name' | 'type'>>(
-        'SELECT id, name, type FROM categories',
+        'SELECT id, name, type FROM categories WHERE deleted_at IS NULL',
       );
       const existingCategoryIds = new Set<string>();
       const byNameType = new Map<string, string>();
@@ -177,9 +210,21 @@ export class SQLiteBackupRepository implements IBackupRepository {
         }
 
         const res = await db.runAsync(
-          `INSERT OR IGNORE INTO categories (
-            id, name, type, parent_id, icon, color, image_uri, is_default, is_archived, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO categories (
+            id, name, type, parent_id, icon, color, image_uri, is_default, is_archived, deleted_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            type = excluded.type,
+            parent_id = excluded.parent_id,
+            icon = excluded.icon,
+            color = excluded.color,
+            image_uri = excluded.image_uri,
+            is_default = excluded.is_default,
+            is_archived = excluded.is_archived,
+            deleted_at = NULL,
+            updated_at = excluded.updated_at
+          WHERE categories.deleted_at IS NOT NULL`,
           cat.id,
           trimmedName,
           cat.type,
@@ -197,6 +242,13 @@ export class SQLiteBackupRepository implements IBackupRepository {
           byNameType.set(nameKey, cat.id);
           categoryIdMap.set(cat.id, cat.id);
           result.categoriesInserted += 1;
+          if (cat.imageUri && isLocalRelativeImagePath(cat.imageUri)) {
+            await trackLocalMediaPendingUpload(db, {
+              localPath: cat.imageUri,
+              entityType: 'category',
+              entityId: cat.id,
+            });
+          }
         } else {
           result.categoriesSkipped += 1;
         }
@@ -204,7 +256,7 @@ export class SQLiteBackupRepository implements IBackupRepository {
 
       // 2. Tags
       const existingTagRows = await db.getAllAsync<Pick<TagRow, 'id' | 'name'>>(
-        'SELECT id, name FROM tags',
+        'SELECT id, name FROM tags WHERE deleted_at IS NULL',
       );
       const existingTagIds = new Set<string>();
       const tagByName = new Map<string, string>();
@@ -230,8 +282,15 @@ export class SQLiteBackupRepository implements IBackupRepository {
         }
 
         const res = await db.runAsync(
-          `INSERT OR IGNORE INTO tags (id, name, color, is_archived, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO tags (id, name, color, is_archived, deleted_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, NULL, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             color = excluded.color,
+             is_archived = excluded.is_archived,
+             deleted_at = NULL,
+             updated_at = excluded.updated_at
+           WHERE tags.deleted_at IS NOT NULL`,
           tag.id,
           trimmedName,
           tag.color,
@@ -251,7 +310,7 @@ export class SQLiteBackupRepository implements IBackupRepository {
 
       // 3. Payment methods
       const existingPmRows = await db.getAllAsync<Pick<PaymentMethodRow, 'id' | 'name'>>(
-        'SELECT id, name FROM payment_methods',
+        'SELECT id, name FROM payment_methods WHERE deleted_at IS NULL',
       );
       const existingPmIds = new Set<string>();
       const pmByName = new Map<string, string>();
@@ -277,12 +336,22 @@ export class SQLiteBackupRepository implements IBackupRepository {
         }
 
         const res = await db.runAsync(
-          `INSERT OR IGNORE INTO payment_methods (
-            id, name, icon, is_builtin, is_archived, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO payment_methods (
+            id, name, icon, image_uri, is_builtin, is_archived, deleted_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            icon = excluded.icon,
+            image_uri = excluded.image_uri,
+            is_builtin = excluded.is_builtin,
+            is_archived = excluded.is_archived,
+            deleted_at = NULL,
+            updated_at = excluded.updated_at
+          WHERE payment_methods.deleted_at IS NOT NULL`,
           pm.id,
           trimmedName,
           pm.icon,
+          pm.imageUri ?? null,
           pm.isBuiltin ? 1 : 0,
           pm.isArchived ? 1 : 0,
           pm.createdAt,
@@ -293,6 +362,13 @@ export class SQLiteBackupRepository implements IBackupRepository {
           pmByName.set(nameKey, pm.id);
           pmIdMap.set(pm.id, pm.id);
           result.paymentMethodsInserted += 1;
+          if (pm.imageUri && isLocalRelativeImagePath(pm.imageUri)) {
+            await trackLocalMediaPendingUpload(db, {
+              localPath: pm.imageUri,
+              entityType: 'payment_method',
+              entityId: pm.id,
+            });
+          }
         } else {
           result.paymentMethodsSkipped += 1;
         }
@@ -305,7 +381,7 @@ export class SQLiteBackupRepository implements IBackupRepository {
       await seedV2DefaultCategoriesSafely(db);
 
       const postSeedCategories = await db.getAllAsync<Pick<CategoryRow, 'id' | 'name' | 'type'>>(
-        'SELECT id, name, type FROM categories',
+        'SELECT id, name, type FROM categories WHERE deleted_at IS NULL',
       );
       for (const row of postSeedCategories) {
         existingCategoryIds.add(row.id);
@@ -316,7 +392,7 @@ export class SQLiteBackupRepository implements IBackupRepository {
       }
 
       const postSeedPms = await db.getAllAsync<Pick<PaymentMethodRow, 'id' | 'name'>>(
-        'SELECT id, name FROM payment_methods',
+        'SELECT id, name FROM payment_methods WHERE deleted_at IS NULL',
       );
       for (const row of postSeedPms) {
         existingPmIds.add(row.id);
@@ -342,10 +418,59 @@ export class SQLiteBackupRepository implements IBackupRepository {
         }
 
         const budgetCurrency = (b.currencyCode ?? backupDefaultCurrency).trim().toUpperCase();
+        const existingScope =
+          resolvedCategoryId === null
+            ? await db.getFirstAsync<{ id: string }>(
+                `SELECT id FROM budgets
+                 WHERE period = ? AND year = ? AND month = ?
+                   AND COALESCE(start_date, '') = COALESCE(?, '')
+                   AND UPPER(COALESCE(currency_code, ?)) = UPPER(?)
+                   AND category_id IS NULL
+                   AND deleted_at IS NULL
+                 LIMIT 1`,
+                b.period,
+                b.year,
+                b.month,
+                b.startDate ?? '',
+                backupDefaultCurrency,
+                budgetCurrency,
+              )
+            : await db.getFirstAsync<{ id: string }>(
+                `SELECT id FROM budgets
+                 WHERE period = ? AND year = ? AND month = ?
+                   AND COALESCE(start_date, '') = COALESCE(?, '')
+                   AND UPPER(COALESCE(currency_code, ?)) = UPPER(?)
+                   AND category_id = ?
+                   AND deleted_at IS NULL
+                 LIMIT 1`,
+                b.period,
+                b.year,
+                b.month,
+                b.startDate ?? '',
+                backupDefaultCurrency,
+                budgetCurrency,
+                resolvedCategoryId,
+              );
+        if (existingScope) {
+          result.budgetsSkipped += 1;
+          continue;
+        }
+
         const res = await db.runAsync(
-          `INSERT OR IGNORE INTO budgets (
-            id, amount_minor, currency_code, period, month, year, start_date, category_id, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO budgets (
+            id, amount_minor, currency_code, period, month, year, start_date, category_id, deleted_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            amount_minor = excluded.amount_minor,
+            currency_code = excluded.currency_code,
+            period = excluded.period,
+            month = excluded.month,
+            year = excluded.year,
+            start_date = excluded.start_date,
+            category_id = excluded.category_id,
+            deleted_at = NULL,
+            updated_at = excluded.updated_at
+          WHERE budgets.deleted_at IS NOT NULL`,
           b.id,
           b.amountMinor,
           budgetCurrency,
@@ -393,10 +518,24 @@ export class SQLiteBackupRepository implements IBackupRepository {
         const txCurrency = (tx.currencyCode ?? backupDefaultCurrency).trim().toUpperCase();
 
         const res = await db.runAsync(
-          `INSERT OR IGNORE INTO transactions (
+          `INSERT INTO transactions (
             id, type, title, amount_minor, currency_code, category_id, category_name_snapshot,
-            payment_method_id, payment_method, transaction_date, note, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            payment_method_id, payment_method, transaction_date, note, deleted_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            type = excluded.type,
+            title = excluded.title,
+            amount_minor = excluded.amount_minor,
+            currency_code = excluded.currency_code,
+            category_id = excluded.category_id,
+            category_name_snapshot = excluded.category_name_snapshot,
+            payment_method_id = excluded.payment_method_id,
+            payment_method = excluded.payment_method,
+            transaction_date = excluded.transaction_date,
+            note = excluded.note,
+            deleted_at = NULL,
+            updated_at = excluded.updated_at
+          WHERE transactions.deleted_at IS NOT NULL`,
           tx.id,
           tx.type,
           tx.title.trim(),
@@ -417,9 +556,14 @@ export class SQLiteBackupRepository implements IBackupRepository {
             const resolvedTagId = tagIdMap.get(rawTagId) ?? rawTagId;
             if (existingTagIds.has(resolvedTagId)) {
               await db.runAsync(
-                'INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)',
+                `INSERT INTO transaction_tags (transaction_id, tag_id, deleted_at, updated_at)
+                 VALUES (?, ?, NULL, ?)
+                 ON CONFLICT(transaction_id, tag_id) DO UPDATE SET
+                   deleted_at = NULL,
+                   updated_at = excluded.updated_at`,
                 tx.id,
                 resolvedTagId,
+                tx.updatedAt || now,
               );
             }
           }
@@ -445,12 +589,22 @@ export class SQLiteBackupRepository implements IBackupRepository {
       }
     });
 
+    // If linked to a cloud account, queue full workspace sync so restored data uploads safely
+    const syncRow = await db.getFirstAsync<Pick<SyncStateRow, 'linked_user_id'>>(
+      'SELECT linked_user_id FROM sync_state WHERE id = 1 LIMIT 1',
+    );
+    if (syncRow?.linked_user_id) {
+      await this.syncRepo.enqueueFullWorkspaceForMigration(syncRow.linked_user_id);
+    }
+
     return result;
   }
 
   async clearAllData(): Promise<void> {
     const db = await this.getDb();
     await db.withTransactionAsync(async () => {
+      await db.runAsync('DELETE FROM media_sync_map');
+      await db.runAsync('DELETE FROM sync_outbox');
       await db.runAsync('DELETE FROM transaction_tags');
       await db.runAsync('DELETE FROM transactions');
       await db.runAsync('DELETE FROM budgets');
@@ -459,6 +613,15 @@ export class SQLiteBackupRepository implements IBackupRepository {
       await db.runAsync('DELETE FROM categories');
       await db.runAsync('DELETE FROM notifications');
       await db.runAsync('DELETE FROM app_settings');
+      await db.runAsync(
+        `UPDATE sync_state
+         SET migration_completed_at = NULL,
+             last_synced_at = NULL,
+             last_error = NULL,
+             sync_status = 'idle',
+             cursors_json = '{}'
+         WHERE id = 1`,
+      );
       await seedDefaultSettings(db);
       await seedDefaultPaymentMethods(db);
       await seedDefaultCurrencies(db);

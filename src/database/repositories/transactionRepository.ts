@@ -12,6 +12,7 @@ import type { Transaction } from '@/types/models';
 import { generateUUID } from '@/utils/uuid';
 
 import { mapTransactionRow } from './mappers';
+import { enqueueOutboxChangeIfLinked } from './syncRepository';
 
 export class SQLiteTransactionRepository implements ITransactionRepository {
   constructor(private readonly getDb: () => Promise<SqlDatabaseAdapter>) {}
@@ -32,7 +33,12 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
 
     const placeholders = rows.map(() => '?').join(', ');
     const tagRows = await db.getAllAsync<TransactionTagRow>(
-      `SELECT transaction_id, tag_id FROM transaction_tags WHERE transaction_id IN (${placeholders})`,
+      `SELECT tt.transaction_id, tt.tag_id
+       FROM transaction_tags tt
+       INNER JOIN tags tg ON tg.id = tt.tag_id
+       WHERE tt.transaction_id IN (${placeholders})
+         AND tt.deleted_at IS NULL
+         AND tg.deleted_at IS NULL`,
       ...rows.map((r) => r.id),
     );
 
@@ -52,22 +58,56 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
     db: SqlDatabaseAdapter,
     transactionId: string,
     tagIds: readonly string[],
+    now: string,
   ): Promise<void> {
-    await db.runAsync('DELETE FROM transaction_tags WHERE transaction_id = ?', transactionId);
-    const uniqueTagIds = Array.from(new Set(tagIds.filter((id) => Boolean(id))));
-    for (const tagId of uniqueTagIds) {
+    const nextSet = new Set(tagIds.filter((id) => Boolean(id)));
+    const existingRows = await db.getAllAsync<Pick<TransactionTagRow, 'tag_id' | 'deleted_at'>>(
+      'SELECT tag_id, deleted_at FROM transaction_tags WHERE transaction_id = ?',
+      transactionId,
+    );
+
+    for (const row of existingRows) {
+      if (!nextSet.has(row.tag_id) && row.deleted_at === null) {
+        await db.runAsync(
+          'UPDATE transaction_tags SET deleted_at = ?, updated_at = ? WHERE transaction_id = ? AND tag_id = ?',
+          now,
+          now,
+          transactionId,
+          row.tag_id,
+        );
+        await enqueueOutboxChangeIfLinked(db, {
+          entityType: 'transaction_tag',
+          entityId: `${transactionId}:${row.tag_id}`,
+          operation: 'delete',
+          localUpdatedAt: now,
+        });
+      }
+    }
+
+    for (const tagId of nextSet) {
       await db.runAsync(
-        'INSERT OR IGNORE INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)',
+        `INSERT INTO transaction_tags (transaction_id, tag_id, deleted_at, updated_at)
+         VALUES (?, ?, NULL, ?)
+         ON CONFLICT(transaction_id, tag_id) DO UPDATE SET
+           deleted_at = NULL,
+           updated_at = excluded.updated_at`,
         transactionId,
         tagId,
+        now,
       );
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'transaction_tag',
+        entityId: `${transactionId}:${tagId}`,
+        operation: 'upsert',
+        localUpdatedAt: now,
+      });
     }
   }
 
   async getAll(filters?: TransactionFilters): Promise<Transaction[]> {
     const db = await this.getDb();
     const fallbackCurrency = await this.getFallbackCurrency(db);
-    const conditions: string[] = [];
+    const conditions: string[] = ['deleted_at IS NULL'];
     const params: SqlBindValue[] = [];
 
     if (filters?.type && filters.type !== 'all') {
@@ -82,7 +122,12 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
 
     if (filters?.tagId) {
       conditions.push(
-        'EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = transactions.id AND tt.tag_id = ?)',
+        `EXISTS (
+          SELECT 1 FROM transaction_tags tt
+          WHERE tt.transaction_id = transactions.id
+            AND tt.tag_id = ?
+            AND tt.deleted_at IS NULL
+        )`,
       );
       params.push(filters.tagId);
     }
@@ -90,7 +135,12 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
     if (filters?.tagIds && filters.tagIds.length > 0) {
       const placeholders = filters.tagIds.map(() => '?').join(', ');
       conditions.push(
-        `EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = transactions.id AND tt.tag_id IN (${placeholders}))`,
+        `EXISTS (
+          SELECT 1 FROM transaction_tags tt
+          WHERE tt.transaction_id = transactions.id
+            AND tt.tag_id IN (${placeholders})
+            AND tt.deleted_at IS NULL
+        )`,
       );
       params.push(...filters.tagIds);
     }
@@ -104,7 +154,7 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
       conditions.push('payment_method_id = ?');
       params.push(filters.paymentMethodId);
     } else if (filters?.paymentMethod && filters.paymentMethod !== 'all') {
-      conditions.push('LOWER(COALESCE(payment_method, \'\')) = LOWER(?)');
+      conditions.push("LOWER(COALESCE(payment_method, '')) = LOWER(?)");
       params.push(filters.paymentMethod);
     }
 
@@ -129,7 +179,10 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
           OR EXISTS (
             SELECT 1 FROM transaction_tags tt
             INNER JOIN tags tg ON tg.id = tt.tag_id
-            WHERE tt.transaction_id = transactions.id AND LOWER(tg.name) LIKE ?
+            WHERE tt.transaction_id = transactions.id
+              AND tt.deleted_at IS NULL
+              AND tg.deleted_at IS NULL
+              AND LOWER(tg.name) LIKE ?
           ))`,
       );
       params.push(term, term, term, term, term, term);
@@ -157,7 +210,7 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
   async getById(id: string): Promise<Transaction | null> {
     const db = await this.getDb();
     const row = await db.getFirstAsync<TransactionRow>(
-      'SELECT * FROM transactions WHERE id = ? LIMIT 1',
+      'SELECT * FROM transactions WHERE id = ? AND deleted_at IS NULL LIMIT 1',
       id,
     );
     if (!row) return null;
@@ -198,8 +251,8 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
       await db.runAsync(
         `INSERT INTO transactions (
           id, type, title, amount_minor, currency_code, category_id, category_name_snapshot,
-          payment_method_id, payment_method, transaction_date, note, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          payment_method_id, payment_method, transaction_date, note, deleted_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
         id,
         input.type,
         trimmedTitle,
@@ -215,8 +268,15 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
         now,
       );
 
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'transaction',
+        entityId: id,
+        operation: 'upsert',
+        localUpdatedAt: now,
+      });
+
       if (input.tagIds && input.tagIds.length > 0) {
-        await this.replaceTransactionTags(db, id, input.tagIds);
+        await this.replaceTransactionTags(db, id, input.tagIds, now);
       }
     });
 
@@ -267,7 +327,7 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
              transaction_date = ?,
              note = ?,
              updated_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND deleted_at IS NULL`,
         input.type ?? existing.type,
         nextTitle,
         nextAmount,
@@ -282,8 +342,15 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
         id,
       );
 
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'transaction',
+        entityId: id,
+        operation: 'upsert',
+        localUpdatedAt: now,
+      });
+
       if (input.tagIds !== undefined) {
-        await this.replaceTransactionTags(db, id, input.tagIds);
+        await this.replaceTransactionTags(db, id, input.tagIds, now);
       }
     });
 
@@ -296,6 +363,39 @@ export class SQLiteTransactionRepository implements ITransactionRepository {
 
   async delete(id: string): Promise<void> {
     const db = await this.getDb();
-    await db.runAsync('DELETE FROM transactions WHERE id = ?', id);
+    const now = new Date().toISOString();
+    await db.withTransactionAsync(async () => {
+      const existingLinks = await db.getAllAsync<Pick<TransactionTagRow, 'tag_id'>>(
+        'SELECT tag_id FROM transaction_tags WHERE transaction_id = ? AND deleted_at IS NULL',
+        id,
+      );
+      await db.runAsync(
+        'UPDATE transaction_tags SET deleted_at = ?, updated_at = ? WHERE transaction_id = ? AND deleted_at IS NULL',
+        now,
+        now,
+        id,
+      );
+      for (const link of existingLinks) {
+        await enqueueOutboxChangeIfLinked(db, {
+          entityType: 'transaction_tag',
+          entityId: `${id}:${link.tag_id}`,
+          operation: 'delete',
+          localUpdatedAt: now,
+        });
+      }
+
+      await db.runAsync(
+        'UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE id = ?',
+        now,
+        now,
+        id,
+      );
+      await enqueueOutboxChangeIfLinked(db, {
+        entityType: 'transaction',
+        entityId: id,
+        operation: 'delete',
+        localUpdatedAt: now,
+      });
+    });
   }
 }

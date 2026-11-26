@@ -4,8 +4,10 @@ import type {
   BudgetRow,
   CategoryRow,
   CurrencyCatalogRow,
+  EntitlementCacheRow,
   NotificationRow,
   PaymentMethodRow,
+  SyncStateRow,
   TagRow,
   TransactionRow,
 } from '@/types/database';
@@ -15,8 +17,10 @@ import type {
   Budget,
   Category,
   PaymentMethodRecord,
+  SyncStateSnapshot,
   Tag,
   Transaction,
+  UserEntitlement,
 } from '@/types/models';
 
 export function mapTransactionRow(
@@ -74,6 +78,7 @@ export function mapPaymentMethodRow(row: PaymentMethodRow): PaymentMethodRecord 
     id: row.id,
     name: row.name,
     icon: row.icon ?? 'wallet',
+    imageUri: row.image_uri?.trim() || null,
     isBuiltin: row.is_builtin === 1,
     isArchived: row.is_archived === 1,
     createdAt: row.created_at,
@@ -124,6 +129,13 @@ export function mapSettingsRow(row: AppSettingsRow): AppSettings {
     profileAvatar: row.profile_avatar ?? null,
     currencyInitialized: row.currency_initialized === 1,
     showHomeBudgetShortcut: row.show_home_budget_shortcut === 1,
+    gender: row.gender ?? null,
+    dateOfBirth: row.date_of_birth ?? null,
+    googleName: row.google_name ?? null,
+    googleEmail: row.google_email ?? null,
+    googleAvatarUrl: row.google_avatar_url ?? null,
+    profileCompletedAt: row.profile_completed_at ?? null,
+    updatedAt: row.updated_at ?? new Date(0).toISOString(),
   };
 }
 
@@ -136,5 +148,53 @@ export function mapNotificationRow(row: NotificationRow): AppNotification {
     isRead: row.is_read === 1,
     metadataJson: row.metadata_json,
     createdAt: row.created_at,
+  };
+}
+
+export function mapSyncStateRow(row: SyncStateRow, fallbackInstallId: string): SyncStateSnapshot {
+  let cursors: Record<string, { serverUpdatedAt: string; id: string }> = {};
+  if (row.cursors_json) {
+    try {
+      const parsed = JSON.parse(row.cursors_json) as Record<
+        string,
+        { serverUpdatedAt: string; id: string }
+      >;
+      if (parsed && typeof parsed === 'object') {
+        cursors = parsed;
+      }
+    } catch {
+      cursors = {};
+    }
+  }
+  return {
+    linkedUserId: row.linked_user_id ?? null,
+    linkedUserEmail: row.linked_user_email ?? null,
+    migrationCompletedAt: row.migration_completed_at ?? null,
+    lastSyncedAt: row.last_synced_at ?? null,
+    lastError: row.last_error ?? null,
+    syncStatus: row.sync_status ?? 'idle',
+    cursors,
+    anonymousInstallId: row.anonymous_install_id || fallbackInstallId,
+  };
+}
+
+export function mapEntitlementRow(row: EntitlementCacheRow | null): UserEntitlement {
+  if (!row) {
+    return {
+      userId: null,
+      tier: 'free',
+      status: 'active',
+      expiresAt: null,
+      source: 'default',
+      updatedAt: null,
+    };
+  }
+  return {
+    userId: row.user_id ?? null,
+    tier: row.tier,
+    status: row.status,
+    expiresAt: row.expires_at ?? null,
+    source: row.source,
+    updatedAt: row.updated_at ?? null,
   };
 }

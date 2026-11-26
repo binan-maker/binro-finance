@@ -1,62 +1,39 @@
+import * as Crypto from 'expo-crypto';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 
 import type { BackupMediaAsset } from '@/types/database';
 import { generateUUID } from '@/utils/uuid';
 
-export const MAX_LOCAL_IMAGE_BYTES = 2 * 1024 * 1024; // 2 MB
-const ROOT_IMAGE_FOLDER = 'binro_images';
-const ALLOWED_MIME_TYPES = new Set([
-  'image/jpeg',
-  'image/jpg',
-  'image/png',
-  'image/webp',
-]);
-const ALLOWED_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp']);
+import {
+  ALLOWED_EXTENSIONS,
+  ALLOWED_MIME_TYPES,
+  getExtensionFromUriOrMime,
+  isAllowedMediaFolder,
+  isLocalRelativeImagePath,
+  MAX_LOCAL_IMAGE_BYTES,
+  mimeTypeFromExtension,
+  ROOT_IMAGE_FOLDER,
+  type LocalImageFolder,
+} from './mediaPathUtils';
+
+export {
+  ALLOWED_EXTENSIONS,
+  ALLOWED_MIME_TYPES,
+  getExtensionFromUriOrMime,
+  isAllowedMediaFolder,
+  isLocalRelativeImagePath,
+  MAX_LOCAL_IMAGE_BYTES,
+  mimeTypeFromExtension,
+  ROOT_IMAGE_FOLDER,
+  type LocalImageFolder,
+};
 
 export interface PickImageResult {
   canceled: boolean;
   relativePath?: string;
   previewUri?: string;
   error?: string;
-}
-
-function getExtensionFromUriOrMime(uri: string, mimeType?: string | null): string | null {
-  const normalizedMime = mimeType?.trim().toLowerCase();
-  if (normalizedMime === 'image/png') return 'png';
-  if (normalizedMime === 'image/webp') return 'webp';
-  if (normalizedMime === 'image/jpeg' || normalizedMime === 'image/jpg') return 'jpg';
-
-  const cleanUri = uri.split('?')[0]?.split('#')[0] ?? '';
-  const match = /\.([a-z0-9]+)$/i.exec(cleanUri);
-  const ext = match?.[1]?.toLowerCase() ?? '';
-  if (ALLOWED_EXTENSIONS.has(ext)) {
-    return ext === 'jpeg' ? 'jpg' : ext;
-  }
-  return null;
-}
-
-function mimeTypeFromExtension(ext: string): string {
-  switch (ext.toLowerCase()) {
-    case 'png':
-      return 'image/png';
-    case 'webp':
-      return 'image/webp';
-    case 'jpg':
-    case 'jpeg':
-    default:
-      return 'image/jpeg';
-  }
-}
-
-export function isLocalRelativeImagePath(value: string | null | undefined): value is string {
-  if (!value) return false;
-  const trimmed = value.trim();
-  return (
-    trimmed.startsWith(`${ROOT_IMAGE_FOLDER}/`) &&
-    !trimmed.includes('..') &&
-    ALLOWED_EXTENSIONS.has((trimmed.split('.').pop() ?? '').toLowerCase())
-  );
 }
 
 export function resolveLocalImageUri(storedValue: string | null | undefined): string | null {
@@ -74,7 +51,7 @@ export function resolveLocalImageUri(storedValue: string | null | undefined): st
   ) {
     return trimmed;
   }
-  if (trimmed.startsWith(`${ROOT_IMAGE_FOLDER}/`)) {
+  if (isLocalRelativeImagePath(trimmed)) {
     try {
       const file = new File(Paths.document, ...trimmed.split('/'));
       return file.exists ? file.uri : null;
@@ -98,7 +75,7 @@ export function deleteStoredImage(storedValue: string | null | undefined): void 
 }
 
 export async function pickAndSaveSquareImage(
-  folder: 'categories' | 'profile',
+  folder: LocalImageFolder,
 ): Promise<PickImageResult> {
   const existingPerm = await ImagePicker.getMediaLibraryPermissionsAsync();
   if (!existingPerm.granted) {
@@ -182,6 +159,48 @@ export async function pickAndSaveSquareImage(
   }
 }
 
+export async function readLocalImageBytes(
+  storedValue: string | null | undefined,
+): Promise<{ bytes: Uint8Array; mimeType: string; ext: string } | null> {
+  if (!isLocalRelativeImagePath(storedValue)) return null;
+  try {
+    const file = new File(Paths.document, ...storedValue.split('/'));
+    if (!file.exists || file.size <= 0 || file.size > MAX_LOCAL_IMAGE_BYTES) {
+      return null;
+    }
+    const base64 = await file.base64();
+    const bytes = decodeBase64ToBytes(base64);
+    const ext = storedValue.split('.').pop()?.toLowerCase() ?? 'jpg';
+    return {
+      bytes,
+      mimeType: mimeTypeFromExtension(ext),
+      ext: ext === 'jpeg' ? 'jpg' : ext,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function computeLocalFileSha256(
+  storedValue: string | null | undefined,
+): Promise<string | null> {
+  const loaded = await readLocalImageBytes(storedValue);
+  if (!loaded) return null;
+  try {
+    const buffer = loaded.bytes.buffer.slice(
+      loaded.bytes.byteOffset,
+      loaded.bytes.byteOffset + loaded.bytes.byteLength,
+    );
+    const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, buffer);
+    const view = new Uint8Array(digest);
+    return Array.from(view)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  } catch {
+    return null;
+  }
+}
+
 export async function readStoredImageAsset(
   storedValue: string | null | undefined,
 ): Promise<BackupMediaAsset | null> {
@@ -214,6 +233,39 @@ function decodeBase64ToBytes(base64: string): Uint8Array {
   throw new Error('Base64 decoder unavailable.');
 }
 
+export function saveDownloadedMediaToDisk(
+  folder: LocalImageFolder,
+  mimeType: string,
+  bytes: Uint8Array,
+  preferredName?: string,
+): string | null {
+  const normalizedMime = mimeType.trim().toLowerCase();
+  if (!ALLOWED_MIME_TYPES.has(normalizedMime)) return null;
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_LOCAL_IMAGE_BYTES) return null;
+
+  const ext = getExtensionFromUriOrMime(preferredName ?? '', normalizedMime);
+  if (!ext) return null;
+
+  const rawStem = preferredName
+    ? preferredName.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)
+    : '';
+  const fileName = `${rawStem || generateUUID()}.${ext}`;
+  const relativePath = `${ROOT_IMAGE_FOLDER}/${folder}/${fileName}`;
+  if (!isLocalRelativeImagePath(relativePath)) return null;
+
+  try {
+    const dir = new Directory(Paths.document, ROOT_IMAGE_FOLDER, folder);
+    dir.create({ intermediates: true, idempotent: true });
+
+    const dest = new File(dir, fileName);
+    dest.create({ overwrite: true });
+    dest.write(bytes);
+    return relativePath;
+  } catch {
+    return null;
+  }
+}
+
 export function restoreMediaAssetToDisk(
   relativePath: string,
   asset: BackupMediaAsset,
@@ -229,7 +281,7 @@ export function restoreMediaAssetToDisk(
     const parts = relativePath.split('/');
     if (parts.length !== 3) return null;
     const [, folder, fileName] = parts;
-    if (folder !== 'categories' && folder !== 'profile') return null;
+    if (!isAllowedMediaFolder(folder)) return null;
 
     const dir = new Directory(Paths.document, ROOT_IMAGE_FOLDER, folder);
     dir.create({ intermediates: true, idempotent: true });

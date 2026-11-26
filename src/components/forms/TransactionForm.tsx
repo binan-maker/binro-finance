@@ -225,6 +225,16 @@ export function TransactionForm({
     [displayTags, selectedTagIds],
   );
 
+  const selectedPmRecord = useMemo(
+    () =>
+      paymentMethods.find((pm) => pm.id === effectivePaymentMethodId) ??
+      paymentMethods.find(
+        (pm) => pm.name.toLowerCase() === effectivePaymentMethodName.toLowerCase(),
+      ) ??
+      null,
+    [paymentMethods, effectivePaymentMethodId, effectivePaymentMethodName],
+  );
+
   const buildDraftSnapshot = (
     overrides?: Partial<TransactionDraft>,
   ): TransactionDraft => ({
@@ -570,20 +580,20 @@ export function TransactionForm({
                         style={[
                           styles.inlineTagPill,
                           {
-                            backgroundColor: theme.primary,
-                            borderColor: theme.primary,
+                            backgroundColor: `${tag.color}20`,
+                            borderColor: tag.color,
                           },
                         ]}>
                         <View
                           style={[
                             styles.tagDot,
-                            { backgroundColor: theme.primaryText },
+                            { backgroundColor: tag.color },
                           ]}
                         />
                         <Text
                           style={[
                             styles.inlineTagText,
-                            { color: theme.primaryText },
+                            { color: theme.text },
                           ]}>
                           {tag.name}
                         </Text>
@@ -643,9 +653,17 @@ export function TransactionForm({
                     styles.selectorButton,
                     { backgroundColor: theme.surface, borderColor: theme.border },
                   ]}>
-                  <Text style={[styles.selectorValue, { color: theme.text }]}>
-                    {effectivePaymentMethodName}
-                  </Text>
+                  <View style={styles.selectorLeft}>
+                    <CategoryIcon
+                      icon={selectedPmRecord?.icon ?? 'wallet'}
+                      color={theme.primary}
+                      imageUri={selectedPmRecord?.imageUri}
+                      size={28}
+                    />
+                    <Text style={[styles.selectorValue, { color: theme.text }]}>
+                      {effectivePaymentMethodName}
+                    </Text>
+                  </View>
                   <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
                 </Pressable>
               </View>

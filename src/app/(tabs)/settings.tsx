@@ -45,6 +45,8 @@ export default function SettingsScreen() {
 
   const settings = useAppStore((s) => s.settings);
   const currencies = useAppStore((s) => s.currencies);
+  const authUser = useAppStore((s) => s.authUser);
+  const syncState = useAppStore((s) => s.syncState);
   const updateSettings = useAppStore((s) => s.updateSettings);
   const openingBalanceDraft = useAppStore((s) => s.openingBalanceDraft);
   const setOpeningBalanceDraft = useAppStore((s) => s.setOpeningBalanceDraft);
@@ -79,9 +81,24 @@ export default function SettingsScreen() {
   const appVersion = Constants.expoConfig?.version ?? '1.0.0';
   const todayISO = getTodayISODate();
 
-  const avatarImageUri = resolveLocalImageUri(settings.profileAvatar);
+  const avatarImageUri =
+    resolveLocalImageUri(settings.profileAvatar) ??
+    resolveLocalImageUri(authUser?.googleAvatarUrl ?? settings.googleAvatarUrl);
   const showAvatarPhoto = Boolean(avatarImageUri && failedAvatarUri !== avatarImageUri);
-  const profileInitials = getProfileInitials(settings.profileName);
+  const profileInitials = getProfileInitials(
+    settings.profileName || authUser?.googleName || authUser?.email,
+  );
+  const accountStatusLabel = authUser
+    ? syncState.syncStatus === 'syncing'
+      ? 'Syncing...'
+      : syncState.syncStatus === 'error'
+        ? 'Sync Error'
+        : syncState.syncStatus === 'offline'
+          ? 'Offline'
+          : 'Google Synced'
+    : syncState.linkedUserEmail
+      ? 'Signed Out'
+      : 'Local Device';
 
   const openBalanceEditor = () => {
     const obCurrency = settings.openingBalanceCurrencyCode || settings.currencyCode;
@@ -188,10 +205,10 @@ export default function SettingsScreen() {
           </View>
           <View style={styles.profileMeta}>
             <Text style={[styles.profileName, { color: theme.text }]} numberOfLines={1}>
-              {settings.profileName?.trim() || 'Local Profile'}
+              {settings.profileName?.trim() || authUser?.googleName || 'Local Profile'}
             </Text>
             <Text style={[styles.profileSub, { color: theme.textSecondary }]} numberOfLines={1}>
-              {settings.profileBio?.trim() || 'Set up local profile'}
+              {authUser?.email || settings.googleEmail || settings.profileBio?.trim() || 'Set up local profile'}
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
@@ -306,7 +323,7 @@ export default function SettingsScreen() {
         <SettingsRow
           icon="person-circle-outline"
           label="Account Management"
-          value="Local Device"
+          value={accountStatusLabel}
           onPress={() => router.push('/account')}
         />
       </AppCard>
@@ -317,7 +334,7 @@ export default function SettingsScreen() {
         <SettingsRow
           icon="shield-checkmark-outline"
           label="Privacy Policy"
-          value="Offline"
+          value={authUser ? 'Local + Cloud Sync' : 'Local-First'}
           onPress={() => setPrivacyModalVisible(true)}
         />
         <View style={[styles.divider, { backgroundColor: theme.border }]} />
@@ -473,7 +490,7 @@ export default function SettingsScreen() {
           </Pressable>
         </View>
         <Text style={[styles.privacyText, { color: theme.textSecondary }]}>
-          BinRo Finance stores all financial records locally on this device using SQLite. Your data stays on your device unless you export a backup file.
+          BinRo Finance stores all your financial records locally on this device in SQLite. Google Sign-In and cloud backup are completely optional: when signed in, your ledger and custom icons sync privately to your personal workspace protected by per-user access rules. Privacy-safe app health analytics never include amounts, balances, notes, categories, or personal details.
         </Text>
         <AppButton
           label="Done"

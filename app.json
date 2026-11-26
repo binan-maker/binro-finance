@@ -37,7 +37,14 @@
       "expo-sqlite",
       "expo-sharing",
       "expo-localization",
-      "expo-image-picker"
+      "expo-image-picker",
+      "expo-secure-store",
+      [
+        "react-native-nitro-google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.placeholder-ios-client-id"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

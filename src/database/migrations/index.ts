@@ -8,6 +8,7 @@ import {
 } from './002_v2_redesign';
 import { v3ProfileTagsMigration } from './003_v3_profile_tags_archive';
 import { v4BudgetsImagesMigration } from './004_v4_budgets_images';
+import { v5PmImagesSyncProfileMigration } from './005_v5_pm_images_sync_profile';
 import type { DatabaseMigration } from './types';
 
 export const MIGRATIONS: readonly DatabaseMigration[] = [
@@ -15,6 +16,7 @@ export const MIGRATIONS: readonly DatabaseMigration[] = [
   v2RedesignMigration,
   v3ProfileTagsMigration,
   v4BudgetsImagesMigration,
+  v5PmImagesSyncProfileMigration,
 ];
 
 interface UserVersionRow {
